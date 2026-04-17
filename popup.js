@@ -46,7 +46,7 @@ function renderList() {
   // btnSave (separate Save MD) hidden — merged into btnFetch action.
   suppLabel.style.display = base === 'nejm' ? '' : 'none';
   btnFetch.style.display = base === 'generic' ? 'none' : '';
-  btnFetch.textContent = 'Fetch + Save MD';
+  btnFetch.textContent = 'Download All Abstracts → MD';
   btnSave.style.display = 'none';
 
   if (articles.length === 0) {
@@ -132,7 +132,7 @@ async function startDownload() {
   if (selected.length === 0) return;
 
   btn.disabled = true;
-  btn.textContent = 'Downloading...';
+  btn.textContent = `Downloading ${selected.length} PDFs...`;
   statusEl.classList.add('active');
 
   let completed = 0;
@@ -174,7 +174,7 @@ async function startDownload() {
 
   progressFill.style.width = '100%';
   statusEl.textContent = `Done. ${completed} files downloaded.`;
-  btn.textContent = 'Download All';
+  btn.textContent = 'Download Selected PDFs';
   btn.disabled = false;
 }
 
@@ -257,7 +257,7 @@ async function fetchAndSaveMd() {
   // Auto-save MD immediately after fetch completes
   saveToMarkdown();
 
-  btn.textContent = 'Fetch + Save MD';
+  btn.textContent = 'Download All Abstracts → MD';
   btn.disabled = false;
 }
 
