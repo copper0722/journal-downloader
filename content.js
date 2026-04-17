@@ -7,7 +7,7 @@
     const path = location.pathname;
     if (host.includes('nejm.org') && path.includes('/toc/')) return 'nejm-toc';
     if (host.includes('nejm.org') && path.includes('/doi/full/')) return 'nejm-article';
-    if (host.includes('nature.com') && path.match(/\/volumes\//)) return 'nature-toc';
+    if (host.includes('nature.com') && (path.match(/\/volumes\//) || path.includes('/current-issue'))) return 'nature-toc';
     if (host.includes('nature.com') && path.includes('/articles/')) return 'nature-article';
     if (host.includes('science.org') && path.includes('/toc/')) return 'science-toc';
     if (host.includes('science.org') && path.match(/\/doi\/(10\.1126\/|full\/|abs\/)/)) return 'science-article';
@@ -456,6 +456,7 @@
       const timeout = setTimeout(() => controller.abort(), 8000);
       const resp = await fetch(url, { credentials: 'include', signal: controller.signal });
       clearTimeout(timeout);
+      if (!resp.ok) return { abstract: '', articleType: '' };
       const html = await resp.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
 

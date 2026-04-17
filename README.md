@@ -93,6 +93,14 @@ Optional step: visits each article page and extracts the abstract via per-journa
 
 ## Changelog
 
+- **3.9.1** (2026-04-18) — Fix: Nature `nature.com/nature/current-issue` path added to `detectMode()` (was falling back to generic). Fix: `fetchPageData()` now returns early on non-OK responses (paywall/login pages no longer contaminate abstract extraction).
+- **3.9** (2026-04-18) — Per-article Article Type (`citation_article_type`/`DC.Type` meta) captured during page fetch, emitted in MD meta line — resolves Comment section ambiguity (Letter vs Editorial vs Column). BMJ parser added.
+- **3.8** (2026-04-18) — Lancet parser: strict `span.OALabel` OA detection (DOM-verified 2026-04-17). Section heading used as article type.
+- **3.7** (2026-04-17) — Lancet parser added. OA rule: `hasPdf = !!OALabel`. `fetchCrossrefAbstract` hybrid fetch with page fallback.
+- **3.6** (2026-04-17) — BMJ TOC URL pattern `^/content/{vol}/{issue}`. `data-pisa-master` DOI extraction.
+- **3.5** (2026-04-17) — Lancet DOM finalised. `citation_article_type` per-article meta fetch parallel with Crossref.
+- **3.4** (2026-04-17) — Crossref public API abstract fetch (CORS-open). Hybrid: Crossref first → HTML scrape fallback.
+- **3.3** (2026-04-17) — `fetchOneAbstract` single-article message handler. Parallel fetch in popup.
 - **3.2** (2026-04-17) — Universal Markdown export across all modes (NEJM/Nature/Science/generic). Unified `fetchArticleAbstract` with per-journal selector maps. Fetch Abstracts button works for all journal modes (was Nature-only).
 - **3.1** (2026-04-17) — Added Science parser. OA via `.icon-access-full.text-access-free`. Renamed from "PDF Batch Downloader" → "Journal Downloader". New brand color for Science (#a60f2d).
 - **3.0** — Nature parser + abstract fetcher + TOC-to-Markdown export.
