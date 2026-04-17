@@ -27,10 +27,10 @@ Chrome extension for batch-downloading PDFs from medical/science journal TOC (Ta
 | NEJM TOC | `nejm.org/toc/*` | title, DOI, article type, authors, PDF, supplements, OA (NEJM non-subscription articles) |
 | Nature TOC | `nature.com/*/volumes/*` | title, DOI, authors, abstract snippet, OA badge, PDF |
 | Science TOC | `science.org/toc/*` | title, DOI, article type, authors, Free-Access indicator (`.icon-access-full.text-access-free`), PDF |
-| Lancet TOC | `thelancet.com/journals/lancet/issue/*` | title, DOI, article type, authors, PDF (download gated on visible "Open Access" text in container) |
+| Lancet TOC | `thelancet.com/journals/lancet/issue/*` | title, DOI, article type (from section heading), authors (loa list), PDF (download gated on `span.OALabel`) |
 | any other page | — | every `.pdf` link |
 
-OA / Free-Access detection is best-effort per journal's HTML convention; closed/paywalled items are still listed but default to unchecked. **Lancet uses a strict text-match rule** (Copper 2026-04-17): `isOA` fires only when container `textContent` matches `/open\s*access/i`. Non-OA items stay visible but `hasPdf=false`, excluded from batch download.
+OA / Free-Access detection is best-effort per journal's HTML convention; closed/paywalled items are still listed but default to unchecked. **Lancet uses a strict DOM rule** (Copper 2026-04-17, DOM verified against current issue): `isOA = !!item.querySelector('.OALabel')`. The `<span class="OALabel">Open Access</span>` is Lancet's authoritative flag. Non-OA items stay visible but `hasPdf=false`, excluded from batch download.
 
 ## Extension architecture
 

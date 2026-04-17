@@ -218,94 +218,70 @@
   }
 
   // ── Lancet TOC parser ──
-  // DOI format: 10.1016/S0140-6736(YY)NNNNN-X
-  // Article URL: https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(YY)NNNNN-X/fulltext
-  // PDF URL: https://www.thelancet.com/action/showPdf?pii=S0140-6736(YY)NNNNN-X
-  // OA rule (Copper 2026-04-17): ONLY mark isOA when container text contains "Open Access" literally.
-  //   Matches "要有看到 open access 字眼的PDF才能下載" — text-based detection, not class-specific.
+  // DOM verified on 2026-04-17 against thelancet.com/journals/lancet/issue/current:
+  //   item container:  li.articleCitation
+  //   section wrapper: section.toc__section → heading h2.toc__section__header
+  //   title:           h3.toc__item__title > a
+  //   authors:         ul.toc__item__authors.loa > li.loa__item
+  //   OA marker:       span.OALabel (text "Open Access")
+  //   PDF link:        a.pdfLink (href = /pdfs/journals/lancet/PIIS0140-6736(YY)NNNNN-X.pdf)
+  // OA rule (Copper 2026-04-17): download only when OALabel present. No class-free fallback
+  //   — "要有看到 open access 字眼" = OALabel literal match, deterministic.
   function parseLancet_TOC() {
-    // Container candidates — Elsevier/Lancet platform uses several layouts.
-    let items = document.querySelectorAll(
-      'article.articleCitation, article.article, article.toc__item, ' +
-      'div.articleCitation, div.toc__item, li.article, section.article'
-    );
-    // Fallback: if no container matched, synthesize one per PII anchor.
-    if (items.length === 0) {
-      const anchors = document.querySelectorAll('a[href*="/article/PIIS0140-6736"]');
-      const wrappers = new Set();
-      anchors.forEach(a => {
-        const w = a.closest('li, article, section, div');
-        if (w) wrappers.add(w);
-      });
-      items = Array.from(wrappers);
-    }
-
+    const items = document.querySelectorAll('li.articleCitation');
     const articles = [];
     const seen = new Set();
 
     items.forEach(item => {
-      const piiLink = item.querySelector('a[href*="/article/PIIS0140-6736"]');
-      if (!piiLink) return;
-      const href = piiLink.getAttribute('href') || '';
+      const titleAnchor = item.querySelector('h3.toc__item__title a, h3.toc__item__title > a');
+      if (!titleAnchor) return;
+      const href = titleAnchor.getAttribute('href') || '';
       const m = href.match(/PIIS0140-6736\([^)]+\)[^/?#]+/);
       if (!m) return;
-      const piiFull = m[0];              // e.g. PIIS0140-6736(26)01234-5
+      const piiFull = m[0];                            // PIIS0140-6736(26)01234-5
       const articleId = piiFull.replace(/^PII/, '');   // S0140-6736(26)01234-5
       const doi = `10.1016/${articleId}`;
       if (seen.has(doi)) return;
       seen.add(doi);
 
-      // Title
-      const titleEl = item.querySelector(
-        'h3 a, h4 a, h2 a, .title a, a.title, .toc__item__title a, .articleCitation_title a'
-      );
-      const title = titleEl
-        ? titleEl.textContent.trim().replace(/\s+/g, ' ')
-        : piiLink.textContent.trim().replace(/\s+/g, ' ');
+      const title = titleAnchor.textContent.trim().replace(/\s+/g, ' ');
 
-      // OA detection — Copper rule: text must contain "open access" (case-insensitive).
-      // Don't trust class names alone; some Lancet TOC rows show badges inconsistently.
-      const itemText = item.textContent || '';
-      const isOA = /open\s*access/i.test(itemText);
+      // OA — strict OALabel detection, matches Copper rule exactly.
+      const isOA = !!item.querySelector('.OALabel');
 
-      // Authors
-      const authorEl = item.querySelector(
-        '.loa, .article-authors, .articleCitation_authors, ul[class*="author"]'
-      );
-      const author = authorEl
-        ? authorEl.textContent.trim().replace(/\s+/g, ' ').substring(0, 150)
+      // Authors from loa list
+      const loaItems = item.querySelectorAll('ul.toc__item__authors .loa__item, ul.loa .loa__item');
+      const author = Array.from(loaItems)
+        .map(li => li.textContent.trim().replace(/\s+/g, ' '))
+        .filter(Boolean)
+        .join(', ')
+        .substring(0, 200);
+
+      // Section heading acts as article type (Editorial / Comment / Articles / Seminar / etc.)
+      const sectionEl = item.closest('section.toc__section');
+      const sectionHeading = sectionEl ? sectionEl.querySelector('h2.toc__section__header, h2[class*="toc__section__header"]') : null;
+      const typeName = sectionHeading
+        ? sectionHeading.textContent.trim().replace(/\s+/g, ' ')
         : '';
 
-      // Article type (Articles, Review, Seminar, Comment, Editorial, Correspondence, etc.)
-      const typeEl = item.querySelector(
-        '.articleType, .meta__type, .toc__item__type, .article-type, .articleCitation_type'
-      );
-      const typeName = typeEl
-        ? typeEl.textContent.trim().replace(/\s+/g, ' ')
-        : '';
-
-      // Abstract snippet sometimes present on TOC
-      const absEl = item.querySelector(
-        '.articleCitation_abstract, .toc__item__abstract, .summary, div[class*="abstract"]'
-      );
-      const abstract = absEl
-        ? absEl.textContent.trim().replace(/\s+/g, ' ').substring(0, 2000)
-        : '';
+      // PDF link — prefer explicit .pdfLink anchor, fallback to constructed URL
+      const pdfAnchor = item.querySelector('a.pdfLink, a[href*="/pdfs/journals/lancet/"]');
+      const pdfHref = pdfAnchor ? pdfAnchor.getAttribute('href') : `/pdfs/journals/lancet/${piiFull}.pdf`;
+      const pdfUrl = pdfHref.startsWith('http') ? pdfHref : `https://www.thelancet.com${pdfHref}`;
 
       const fullUrl = `https://www.thelancet.com/journals/lancet/article/${piiFull}/fulltext`;
-      const pdfUrl = `https://www.thelancet.com/action/showPdf?pii=${articleId}`;
 
       articles.push({
         doi,
         articleId,
         title,
-        abstract,
+        abstract: '',                // Lancet TOC doesn't inline abstracts; Crossref + HTML scrape will fill
         pdfUrl,
         fullUrl,
         author,
         typeCode: '',
         typeName,
-        hasPdf: isOA,   // Copper rule: only OA triggers download
+        hasPdf: isOA,                // Copper rule: only OA triggers download
         isOA,
         journal: 'Lancet',
       });
