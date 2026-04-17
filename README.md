@@ -2,7 +2,7 @@
 
 Chrome extension for batch-downloading PDFs from medical/science journal TOC (Table of Contents) pages.
 
-**Enhanced parsers**: NEJM · Nature · Science
+**Enhanced parsers**: NEJM · Nature · Science · Lancet
 **Fallback**: generic PDF link detection on any page
 
 ## What it does
@@ -27,16 +27,17 @@ Chrome extension for batch-downloading PDFs from medical/science journal TOC (Ta
 | NEJM TOC | `nejm.org/toc/*` | title, DOI, article type, authors, PDF, supplements, OA (NEJM non-subscription articles) |
 | Nature TOC | `nature.com/*/volumes/*` | title, DOI, authors, abstract snippet, OA badge, PDF |
 | Science TOC | `science.org/toc/*` | title, DOI, article type, authors, Free-Access indicator (`.icon-access-full.text-access-free`), PDF |
+| Lancet TOC | `thelancet.com/journals/lancet/issue/*` | title, DOI, article type, authors, PDF (download gated on visible "Open Access" text in container) |
 | any other page | — | every `.pdf` link |
 
-OA / Free-Access detection is best-effort per journal's HTML convention; closed/paywalled items are still listed but default to unchecked.
+OA / Free-Access detection is best-effort per journal's HTML convention; closed/paywalled items are still listed but default to unchecked. **Lancet uses a strict text-match rule** (Copper 2026-04-17): `isOA` fires only when container `textContent` matches `/open\s*access/i`. Non-OA items stay visible but `hasPdf=false`, excluded from batch download.
 
 ## Extension architecture
 
 | file | role |
 |---|---|
 | `manifest.json` | Chrome Extension v3 manifest |
-| `content.js` | runs on each page; detects mode (nejm-toc / nature-toc / science-toc / generic) and extracts article metadata |
+| `content.js` | runs on each page; detects mode (nejm-toc / nature-toc / science-toc / lancet-toc / generic) and extracts article metadata |
 | `popup.html` + `popup.js` | UI shown on toolbar click; list, filter, batch-download |
 | `icon*.png` | toolbar icons |
 
@@ -47,6 +48,7 @@ OA / Free-Access detection is best-effort per journal's HTML convention; closed/
 | NEJM | `{articleId}_{sanitizedTitle}.pdf` (e.g., `NEJMoa2511920_DapagliflozinCKD.pdf`) |
 | Nature | `{articleId}_{sanitizedTitle}.pdf` (e.g., `s41586-025-09896-x_MitochondrialTransfer.pdf`) |
 | Science | `{articleId}_{sanitizedTitle}.pdf` (e.g., `science.aec0970_Title.pdf`) |
+| Lancet | `{articleId}_{sanitizedTitle}.pdf` (e.g., `S0140-6736(26)01234-5_GlobalBurden.pdf`) |
 | generic | filename derived from URL path |
 
 Supplements (NEJM) are appended with `_suppl`.

@@ -11,6 +11,8 @@
     if (host.includes('nature.com') && path.includes('/articles/')) return 'nature-article';
     if (host.includes('science.org') && path.includes('/toc/')) return 'science-toc';
     if (host.includes('science.org') && path.match(/\/doi\/(10\.1126\/|full\/|abs\/)/)) return 'science-article';
+    if (host.includes('thelancet.com') && path.match(/\/journals\/lancet\/issue\//)) return 'lancet-toc';
+    if (host.includes('thelancet.com') && path.includes('/article/PIIS0140-6736')) return 'lancet-article';
     return 'generic';
   }
 
@@ -215,6 +217,102 @@
     return articles;
   }
 
+  // ── Lancet TOC parser ──
+  // DOI format: 10.1016/S0140-6736(YY)NNNNN-X
+  // Article URL: https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(YY)NNNNN-X/fulltext
+  // PDF URL: https://www.thelancet.com/action/showPdf?pii=S0140-6736(YY)NNNNN-X
+  // OA rule (Copper 2026-04-17): ONLY mark isOA when container text contains "Open Access" literally.
+  //   Matches "要有看到 open access 字眼的PDF才能下載" — text-based detection, not class-specific.
+  function parseLancet_TOC() {
+    // Container candidates — Elsevier/Lancet platform uses several layouts.
+    let items = document.querySelectorAll(
+      'article.articleCitation, article.article, article.toc__item, ' +
+      'div.articleCitation, div.toc__item, li.article, section.article'
+    );
+    // Fallback: if no container matched, synthesize one per PII anchor.
+    if (items.length === 0) {
+      const anchors = document.querySelectorAll('a[href*="/article/PIIS0140-6736"]');
+      const wrappers = new Set();
+      anchors.forEach(a => {
+        const w = a.closest('li, article, section, div');
+        if (w) wrappers.add(w);
+      });
+      items = Array.from(wrappers);
+    }
+
+    const articles = [];
+    const seen = new Set();
+
+    items.forEach(item => {
+      const piiLink = item.querySelector('a[href*="/article/PIIS0140-6736"]');
+      if (!piiLink) return;
+      const href = piiLink.getAttribute('href') || '';
+      const m = href.match(/PIIS0140-6736\([^)]+\)[^/?#]+/);
+      if (!m) return;
+      const piiFull = m[0];              // e.g. PIIS0140-6736(26)01234-5
+      const articleId = piiFull.replace(/^PII/, '');   // S0140-6736(26)01234-5
+      const doi = `10.1016/${articleId}`;
+      if (seen.has(doi)) return;
+      seen.add(doi);
+
+      // Title
+      const titleEl = item.querySelector(
+        'h3 a, h4 a, h2 a, .title a, a.title, .toc__item__title a, .articleCitation_title a'
+      );
+      const title = titleEl
+        ? titleEl.textContent.trim().replace(/\s+/g, ' ')
+        : piiLink.textContent.trim().replace(/\s+/g, ' ');
+
+      // OA detection — Copper rule: text must contain "open access" (case-insensitive).
+      // Don't trust class names alone; some Lancet TOC rows show badges inconsistently.
+      const itemText = item.textContent || '';
+      const isOA = /open\s*access/i.test(itemText);
+
+      // Authors
+      const authorEl = item.querySelector(
+        '.loa, .article-authors, .articleCitation_authors, ul[class*="author"]'
+      );
+      const author = authorEl
+        ? authorEl.textContent.trim().replace(/\s+/g, ' ').substring(0, 150)
+        : '';
+
+      // Article type (Articles, Review, Seminar, Comment, Editorial, Correspondence, etc.)
+      const typeEl = item.querySelector(
+        '.articleType, .meta__type, .toc__item__type, .article-type, .articleCitation_type'
+      );
+      const typeName = typeEl
+        ? typeEl.textContent.trim().replace(/\s+/g, ' ')
+        : '';
+
+      // Abstract snippet sometimes present on TOC
+      const absEl = item.querySelector(
+        '.articleCitation_abstract, .toc__item__abstract, .summary, div[class*="abstract"]'
+      );
+      const abstract = absEl
+        ? absEl.textContent.trim().replace(/\s+/g, ' ').substring(0, 2000)
+        : '';
+
+      const fullUrl = `https://www.thelancet.com/journals/lancet/article/${piiFull}/fulltext`;
+      const pdfUrl = `https://www.thelancet.com/action/showPdf?pii=${articleId}`;
+
+      articles.push({
+        doi,
+        articleId,
+        title,
+        abstract,
+        pdfUrl,
+        fullUrl,
+        author,
+        typeCode: '',
+        typeName,
+        hasPdf: isOA,   // Copper rule: only OA triggers download
+        isOA,
+        journal: 'Lancet',
+      });
+    });
+    return articles;
+  }
+
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
   const ABSTRACT_SELECTORS = {
@@ -237,6 +335,14 @@
       'section[role="doc-abstract"] p',
       '.hlFld-Abstract p',
       '#bodymatter section#abstract p',
+      'div[class*="abstract"] p',
+    ],
+    lancet: [
+      'div.abstract__text',
+      'section.abstract p',
+      'div[role="doc-abstract"] p',
+      'div.summary p',
+      'section[id*="abstract"] p',
       'div[class*="abstract"] p',
     ],
     generic: [
@@ -329,6 +435,7 @@
       if (mode === 'nejm-toc') articles = parseNEJM_TOC();
       else if (mode === 'nature-toc') articles = parseNature_TOC();
       else if (mode === 'science-toc') articles = parseScience_TOC();
+      else if (mode === 'lancet-toc') articles = parseLancet_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {

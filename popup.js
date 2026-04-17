@@ -18,6 +18,7 @@ function modeBase() {
   if (pageMode.startsWith('nejm')) return 'nejm';
   if (pageMode.startsWith('nature')) return 'nature';
   if (pageMode.startsWith('science')) return 'science';
+  if (pageMode.startsWith('lancet')) return 'lancet';
   return 'generic';
 }
 
@@ -37,7 +38,7 @@ function renderList() {
   progressFill.className = `fill ${base}`;
   btn.className = `btn-dl btn-${base}`;
 
-  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', generic: 'PDF Batch Downloader' };
+  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', generic: 'PDF Batch Downloader' };
   headerTitle.textContent = titles[base];
 
   // 2-button UI:
@@ -266,7 +267,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -274,10 +275,13 @@ function saveToMarkdown() {
   // NEJM: /toc/nejm/394/15  → 394_15
   // Nature: /nature/volumes/652/issues/8108 → 652_8108
   // Science: /toc/science/392/6791 → 392_6791
+  // Lancet: /journals/lancet/issue/vol406no10494/... → 406_10494; /issue/current → (none)
   const m1 = url.match(/\/toc\/[^/]+\/(\d+)\/(\d+)/);
   const m2 = url.match(/\/volumes\/(\d+)\/issues\/(\d+)/);
+  const m3 = location.href.match(/\/journals\/lancet\/issue\/vol(\d+)no(\d+)/);
   if (m1) issueTag = `_${m1[1]}-${m1[2]}`;
   else if (m2) issueTag = `_${m2[1]}-${m2[2]}`;
+  else if (m3) issueTag = `_${m3[1]}-${m3[2]}`;
 
   const oaCount = articles.filter(a => a.isOA).length;
   const totalArticles = articles.length;
