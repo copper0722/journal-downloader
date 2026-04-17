@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Journal Downloader",
-  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science, Lancet, BMJ. Hybrid abstract fetch: Crossref API first → HTML scrape fallback. BMJ parser (v3.7) supports both ID formats (bmj.s713 for News + bmj-2025-087321 for Research), sections This Week/Research/Comment/Education/Obituaries, '🔓 Free to read' for non-OA BMJ items.",
-  "version": "3.7",
+  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science, Lancet, BMJ. Hybrid abstract fetch: Crossref API first → HTML scrape fallback. v3.8: BMJ News/Editorial lede fallback — if no abstract section, take first 3 paragraphs of .fulltext-view capped at 1500 chars.",
+  "version": "3.8",
   "permissions": ["downloads", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],
   "action": {

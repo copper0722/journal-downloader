@@ -402,13 +402,18 @@
       'div[class*="abstract"] p',
     ],
     bmj: [
-      // BMJ article page uses .abstract or #abstract-1, with nested paragraphs
+      // Research papers — real abstract block
       'div.abstract p',
       'section.abstract p',
       'div[class*="abstract-"] p',
       'section[id^="abstract"] p',
       '#abstract-1 p',
       '.article-abstract p',
+      // News / Editorial / Comment / Education — no abstract; lede = first paragraphs of fulltext-view.
+      // fetchPageAbstract caps total length so we don't dump whole article.
+      'div.article.fulltext-view > p',
+      'div.fulltext-view > p',
+      '.fulltext-view > p',
     ],
     generic: [
       'section#abstract p',
@@ -458,8 +463,10 @@
       for (const sel of selectors) {
         const els = doc.querySelectorAll(sel);
         if (els.length === 0) continue;
-        // Join multi-paragraph abstracts
-        const text = Array.from(els).map(p => p.textContent.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ');
+        // Join up to first 3 paragraphs (lede cap for News-style selectors); cap total chars at 1500.
+        const pieces = Array.from(els).slice(0, 3).map(p => p.textContent.trim()).filter(Boolean);
+        let text = pieces.join(' ').replace(/\s+/g, ' ');
+        if (text.length > 1500) text = text.substring(0, 1500).replace(/\s+\S*$/, '') + '…';
         if (text.length > 50) return text;
       }
       return '';
