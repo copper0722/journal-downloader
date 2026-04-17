@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { width: 520px; font: 13px -apple-system, sans-serif; color: #222; }
+
+.header { padding: 10px 14px; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+.header.nejm { background: #b31b1b; }
+.header.nature { background: #005ea2; }
+.header.science { background: #a60f2d; }
+.header.generic { background: #333; }
+.header h1 { font-size: 15px; font-weight: 600; }
+.header .count { font-size: 12px; opacity: 0.85; }
+
+.controls { padding: 8px 14px; background: #f5f5f5; border-bottom: 1px solid #ddd; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.controls label { font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.controls button { color: #fff; border: none; padding: 5px 12px; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 600; }
+.controls button:hover { filter: brightness(0.85); }
+.controls button:disabled { background: #ccc !important; cursor: default; filter: none; }
+.btn-dl { background: #b31b1b; }
+.btn-fetch { background: #006d2c; }
+.btn-save { background: #444; }
+.btn-nejm { background: #b31b1b; }
+.btn-nature { background: #005ea2; }
+.btn-science { background: #a60f2d; }
+.btn-generic { background: #333; }
+
+#status { padding: 6px 14px; font-size: 11px; color: #666; background: #fafafa; border-bottom: 1px solid #eee; display: none; }
+#status.active { display: block; }
+.progress-bar { height: 3px; background: #e0e0e0; }
+.progress-bar .fill { height: 100%; width: 0%; transition: width 0.3s; }
+.fill.nejm { background: #b31b1b; }
+.fill.nature { background: #005ea2; }
+.fill.science { background: #a60f2d; }
+.fill.generic { background: #333; }
+
+#list { max-height: 500px; overflow-y: auto; }
+
+.item { padding: 8px 14px; border-bottom: 1px solid #f0f0f0; display: flex; gap: 8px; align-items: flex-start; }
+.item:hover { background: #fafafa; }
+.item input[type=checkbox] { margin-top: 3px; flex-shrink: 0; }
+.item .info { flex: 1; min-width: 0; }
+.item .title { font-size: 12px; font-weight: 500; line-height: 1.3; }
+.item .url { font-size: 10px; color: #aaa; word-break: break-all; margin-top: 2px; }
+.item .abstract { font-size: 11px; color: #555; margin-top: 3px; line-height: 1.35; max-height: 3.5em; overflow: hidden; cursor: pointer; }
+.item .abstract.expanded { max-height: none; }
+.item .meta { font-size: 10px; color: #888; margin-top: 3px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+.badge.type { background: #eee; color: #555; }
+.badge.oa { background: #e8f5e9; color: #2e7d32; font-weight: 600; }
+.badge.closed { background: #fce4ec; color: #c62828; }
+.badge.pdf { background: #fff3e0; color: #e65100; }
+.done { color: #4caf50; }
+.fail { color: #f44336; }
+
+.empty { padding: 30px; text-align: center; color: #999; font-size: 13px; }
+.section-header { padding: 6px 14px; background: #f0f0f0; font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #ddd; }
+</style>
+</head>
+<body>
+<div class="header generic" id="header">
+  <h1 id="headerTitle">Journal Downloader</h1>
+  <span class="count" id="countLabel"></span>
+</div>
+<div class="controls">
+  <label><input type="checkbox" id="selectAll" checked> All</label>
+  <label id="suppLabel" style="display:none"><input type="checkbox" id="inclSupp"> +Suppl</label>
+  <span style="flex:1"></span>
+  <button id="btnFetchAbs" class="btn-fetch" style="display:none">Fetch Abstracts</button>
+  <button id="btnSaveMd" class="btn-save" style="display:none">Save MD</button>
+  <button id="btnDownload" class="btn-dl" disabled>Download All</button>
+</div>
+<div id="status"></div>
+<div class="progress-bar"><div class="fill generic" id="progressFill"></div></div>
+<div id="list"></div>
+<script src="popup.js"></script>
+</body>
+</html>
