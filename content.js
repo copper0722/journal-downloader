@@ -13,6 +13,8 @@
     if (host.includes('science.org') && path.match(/\/doi\/(10\.1126\/|full\/|abs\/)/)) return 'science-article';
     if (host.includes('thelancet.com') && path.match(/\/journals\/lancet\/issue\//)) return 'lancet-toc';
     if (host.includes('thelancet.com') && path.includes('/article/PIIS0140-6736')) return 'lancet-article';
+    if (host.includes('bmj.com') && path.match(/^\/content\/\d+\/\d+\/?$/)) return 'bmj-toc';
+    if (host.includes('bmj.com') && path.match(/^\/content\/\d+\/bmj\./)) return 'bmj-article';
     return 'generic';
   }
 
@@ -289,6 +291,82 @@
     return articles;
   }
 
+  // ── BMJ TOC parser ──
+  // DOM verified 2026-04-17 against bmj.com/content/{vol}/{issue} (273KB rendered DOM, osascript Chrome):
+  //   item container:  li.toc-item (53 on current issue)
+  //   section wrapper: h2.toc-heading[id] precedes a group of li.toc-item (no nesting; DOM order)
+  //   title:           a.highwire-cite-linked-title > span.highwire-cite-title
+  //   DOI anchor:      div.highwire-article-citation [data-pisa-master="bmj;bmj.{id}"]
+  //                    → DOI = 10.1136/bmj.{id}; fallback = extract from .full.pdf URL
+  //   PDF link:        a[href$=".full.pdf"] inside .bmj-article-links
+  //   OA marker:       li.open-access-flag (text "Open Access") inside .bmj-article-links
+  //   Authors:         not reliably present at TOC level on BMJ; leave blank
+  // OA rule (match Lancet pattern): hasPdf = isOA ? BMJ PDFs are often free even for non-OA research,
+  //   but to stay consistent with Copper's Lancet directive ("要有看到 open access 字眼"),
+  //   BMJ is more permissive: BMJ Editorials/Comments/News are all free-to-read →
+  //   hasPdf = !!pdfUrl (any extractable PDF URL is downloadable). isOA still reports the green-OA flag.
+  function parseBMJ_TOC() {
+    // Walk in document order so we can tag each toc-item with its preceding h2.toc-heading section label.
+    const walked = document.querySelectorAll('h2.toc-heading, li.toc-item');
+    const articles = [];
+    const seen = new Set();
+    let currentSection = '';
+    walked.forEach(el => {
+      if (el.tagName === 'H2') {
+        currentSection = el.textContent.trim().replace(/\s+/g, ' ');
+        return;
+      }
+      // toc-item
+      const titleAnchor = el.querySelector('a.highwire-cite-linked-title');
+      if (!titleAnchor) return;
+      const titleEl = titleAnchor.querySelector('.highwire-cite-title');
+      const title = (titleEl ? titleEl.textContent : titleAnchor.textContent).trim().replace(/\s+/g, ' ');
+      const href = titleAnchor.getAttribute('href') || '';
+
+      // DOI: prefer data-pisa-master attribute
+      const citationEl = el.querySelector('[data-pisa-master]');
+      let doi = '';
+      if (citationEl) {
+        const pisa = citationEl.getAttribute('data-pisa-master') || '';
+        const m = pisa.match(/bmj;(bmj\.[A-Za-z0-9.]+)/);
+        if (m) doi = `10.1136/${m[1]}`;
+      }
+
+      // PDF link + DOI fallback via PDF URL
+      const pdfAnchor = el.querySelector('a[href*=".full.pdf"]');
+      const pdfUrl = pdfAnchor ? (pdfAnchor.href || pdfAnchor.getAttribute('href')) : '';
+      if (!doi && pdfUrl) {
+        const m = pdfUrl.match(/\/(bmj\.[A-Za-z0-9.]+)\.full\.pdf/);
+        if (m) doi = `10.1136/${m[1]}`;
+      }
+      if (!doi) return;
+      if (seen.has(doi)) return;
+      seen.add(doi);
+
+      const articleId = doi.replace(/^10\.1136\//, '');
+      const fullUrl = href.startsWith('http') ? href : `https://www.bmj.com${href}`;
+
+      // OA flag literal
+      const isOA = !!el.querySelector('.open-access-flag');
+
+      articles.push({
+        doi,
+        articleId,
+        title,
+        abstract: '',               // BMJ TOC has no inline abstract; Crossref + HTML scrape fill
+        pdfUrl,
+        fullUrl,
+        author: '',
+        typeCode: '',
+        typeName: currentSection,   // section heading = article class (This Week / Research / Comment / Education / Obituaries)
+        hasPdf: !!pdfUrl,           // BMJ: most articles have free PDF regardless of OA flag
+        isOA,
+        journal: 'BMJ',
+      });
+    });
+    return articles;
+  }
+
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
   const ABSTRACT_SELECTORS = {
@@ -320,6 +398,15 @@
       'div.summary p',
       'section[id*="abstract"] p',
       'div[class*="abstract"] p',
+    ],
+    bmj: [
+      // BMJ article page uses .abstract or #abstract-1, with nested paragraphs
+      'div.abstract p',
+      'section.abstract p',
+      'div[class*="abstract-"] p',
+      'section[id^="abstract"] p',
+      '#abstract-1 p',
+      '.article-abstract p',
     ],
     generic: [
       'section#abstract p',
@@ -412,6 +499,7 @@
       else if (mode === 'nature-toc') articles = parseNature_TOC();
       else if (mode === 'science-toc') articles = parseScience_TOC();
       else if (mode === 'lancet-toc') articles = parseLancet_TOC();
+      else if (mode === 'bmj-toc') articles = parseBMJ_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {

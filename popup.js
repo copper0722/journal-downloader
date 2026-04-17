@@ -19,6 +19,7 @@ function modeBase() {
   if (pageMode.startsWith('nature')) return 'nature';
   if (pageMode.startsWith('science')) return 'science';
   if (pageMode.startsWith('lancet')) return 'lancet';
+  if (pageMode.startsWith('bmj')) return 'bmj';
   return 'generic';
 }
 
@@ -38,7 +39,7 @@ function renderList() {
   progressFill.className = `fill ${base}`;
   btn.className = `btn-dl btn-${base}`;
 
-  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', generic: 'PDF Batch Downloader' };
+  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', bmj: 'BMJ Downloader', generic: 'PDF Batch Downloader' };
   headerTitle.textContent = titles[base];
 
   // 2-button UI:
@@ -84,6 +85,9 @@ function renderList() {
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'nejm' && a.typeName) {
       badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
+    } else if (base === 'bmj') {
+      badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Free</span>';
+      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
     }
