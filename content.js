@@ -247,7 +247,34 @@
     ],
   };
 
-  async function fetchArticleAbstract(url, mode) {
+  // Crossref public API — open CORS, no auth, abstract deposited by publisher (best for Science ~86%).
+  // Empty for publishers that don't deposit (Nature ~20%, NEJM ~0% — fall through to HTML scrape).
+  async function fetchCrossrefAbstract(doi) {
+    if (!doi) return '';
+    const clean = doi.trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+    if (!/^10\.\d{4,9}\//.test(clean)) return '';
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 6000);
+      const resp = await fetch(`https://api.crossref.org/works/${encodeURIComponent(clean)}`, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'journal-downloader/3.4 (github.com/copper0722/journal-downloader)' },
+      });
+      clearTimeout(timeout);
+      if (!resp.ok) return '';
+      const data = await resp.json();
+      let raw = (data && data.message && data.message.abstract) || '';
+      if (!raw) return '';
+      // Strip JATS XML + collapse whitespace + drop leading "Abstract" label.
+      raw = raw.replace(/<[^>]+>/g, ' ')
+               .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+               .replace(/\s+/g, ' ').trim()
+               .replace(/^abstract[:.\s]*/i, '');
+      return raw.length > 100 ? raw : '';
+    } catch (e) { return ''; }
+  }
+
+  async function fetchPageAbstract(url, mode) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
@@ -266,6 +293,14 @@
       }
       return '';
     } catch (e) { return ''; }
+  }
+
+  // Hybrid fetch: Crossref first (fast, CORS-open, publisher-metadata), fall back to HTML scrape.
+  // doi argument is optional — when absent, behaves like legacy v3.3 (page scrape only).
+  async function fetchArticleAbstract(url, mode, doi) {
+    const fromCrossref = await fetchCrossrefAbstract(doi);
+    if (fromCrossref) return fromCrossref;
+    return await fetchPageAbstract(url, mode);
   }
 
   // ── NEJM supplement parser ──
@@ -299,7 +334,7 @@
     } else if (request.action === 'fetchOneAbstract') {
       // Single-article fetch (popup.js calls in parallel with its own batching).
       (async () => {
-        const abs = await fetchArticleAbstract(request.url, request.mode || mode);
+        const abs = await fetchArticleAbstract(request.url, request.mode || mode, request.doi);
         sendResponse({ abstract: abs });
       })();
       return true;
@@ -310,7 +345,7 @@
         const results = [];
         for (const a of (request.articles || [])) {
           if (!a.fullUrl) continue;
-          const abs = await fetchArticleAbstract(a.fullUrl, fetchMode);
+          const abs = await fetchArticleAbstract(a.fullUrl, fetchMode, a.doi);
           results.push({ index: a.index, abstract: abs });
           await new Promise(r => setTimeout(r, 600));
         }

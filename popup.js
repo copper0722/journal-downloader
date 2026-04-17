@@ -223,7 +223,7 @@ async function fetchAndSaveMd() {
       if (!tabs[0]) { resolve(); return; }
       chrome.tabs.sendMessage(
         tabs[0].id,
-        { action: 'fetchOneAbstract', url: article.fullUrl, mode: base },
+        { action: 'fetchOneAbstract', url: article.fullUrl, doi: article.doi, mode: base },
         response => {
           if (!chrome.runtime.lastError && response && response.abstract) {
             articles[article.index].abstract = response.abstract;

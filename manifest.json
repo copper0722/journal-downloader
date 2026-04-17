@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Journal Downloader",
-  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science. 2-button UI (v3.3): Fetch+Save MD | Download Selected.",
-  "version": "3.3",
+  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science. Hybrid abstract fetch (v3.4): Crossref API first → HTML scrape fallback.",
+  "version": "3.4",
   "permissions": ["downloads", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],
   "action": {
