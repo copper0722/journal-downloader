@@ -323,12 +323,14 @@
       const title = (titleEl ? titleEl.textContent : titleAnchor.textContent).trim().replace(/\s+/g, ' ');
       const href = titleAnchor.getAttribute('href') || '';
 
-      // DOI: prefer data-pisa-master attribute
+      // DOI: prefer data-pisa-master attribute. BMJ uses two ID formats:
+      //   - News/Comment/Editorial: "bmj;bmj.s713"       → 10.1136/bmj.s713
+      //   - Research (year-keyed):  "bmj;bmj-2025-087321" → 10.1136/bmj-2025-087321
       const citationEl = el.querySelector('[data-pisa-master]');
       let doi = '';
       if (citationEl) {
         const pisa = citationEl.getAttribute('data-pisa-master') || '';
-        const m = pisa.match(/bmj;(bmj\.[A-Za-z0-9.]+)/);
+        const m = pisa.match(/bmj;(bmj[.-][\w.-]+)/);
         if (m) doi = `10.1136/${m[1]}`;
       }
 
@@ -336,7 +338,7 @@
       const pdfAnchor = el.querySelector('a[href*=".full.pdf"]');
       const pdfUrl = pdfAnchor ? (pdfAnchor.href || pdfAnchor.getAttribute('href')) : '';
       if (!doi && pdfUrl) {
-        const m = pdfUrl.match(/\/(bmj\.[A-Za-z0-9.]+)\.full\.pdf/);
+        const m = pdfUrl.match(/\/(bmj[.-][\w.-]+)\.full\.pdf/);
         if (m) doi = `10.1136/${m[1]}`;
       }
       if (!doi) return;

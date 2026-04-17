@@ -271,7 +271,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -283,9 +283,11 @@ function saveToMarkdown() {
   const m1 = url.match(/\/toc\/[^/]+\/(\d+)\/(\d+)/);
   const m2 = url.match(/\/volumes\/(\d+)\/issues\/(\d+)/);
   const m3 = location.href.match(/\/journals\/lancet\/issue\/vol(\d+)no(\d+)/);
+  const m4 = location.href.match(/bmj\.com\/content\/(\d+)\/(\d+)/);
   if (m1) issueTag = `_${m1[1]}-${m1[2]}`;
   else if (m2) issueTag = `_${m2[1]}-${m2[2]}`;
   else if (m3) issueTag = `_${m3[1]}-${m3[2]}`;
+  else if (m4) issueTag = `_${m4[1]}-${m4[2]}`;
 
   const oaCount = articles.filter(a => a.isOA).length;
   const totalArticles = articles.length;
@@ -317,6 +319,7 @@ ${totalArticles} articles · ${oaCount} open access / free
     // Metadata line — OA flag + author
     const meta = [];
     if (a.isOA) meta.push('🟢 **Open Access**');
+    else if (a.isOA === false && base === 'bmj') meta.push('🔓 Free to read');  // BMJ non-OA ≈ free (not gold OA, but PDF is open)
     else if (a.isOA === false && base !== 'generic') meta.push('🔒 Paywall');
     if (a.author) meta.push(`👤 ${a.author}`);
     if (meta.length) md += meta.join(' · ') + '\n\n';
