@@ -215,8 +215,39 @@
     return articles;
   }
 
-  // ── Fetch abstract from Nature article page ──
-  async function fetchNatureAbstract(url) {
+  // ── Fetch abstract from journal article page (mode-aware, all journals) ──
+  // Per-journal selector maps with multiple fallbacks for HTML robustness.
+  const ABSTRACT_SELECTORS = {
+    nejm: [
+      'section#article_body section[aria-label*="Abstract" i] p',
+      '.m-article-body__section--abstract p',
+      'article section#abstract p',
+      'section#abstract p',
+      'div[class*="abstract"] p',
+    ],
+    nature: [
+      '#Abs1-content p',
+      '#Abs1 p',
+      '[id*="Abs"] p',
+      '.c-article-section__content p',
+      'div[data-title="Abstract"] p',
+    ],
+    science: [
+      'section#abstract p',
+      'section[role="doc-abstract"] p',
+      '.hlFld-Abstract p',
+      '#bodymatter section#abstract p',
+      'div[class*="abstract"] p',
+    ],
+    generic: [
+      'section#abstract p',
+      'div#abstract p',
+      'div[class*="abstract"] p',
+      'p[class*="abstract"]',
+    ],
+  };
+
+  async function fetchArticleAbstract(url, mode) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
@@ -224,8 +255,16 @@
       clearTimeout(timeout);
       const html = await resp.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      const absEl = doc.querySelector('#Abs1-content p, #Abs1 p, [id*="Abs"] p, .c-article-section__content p');
-      return absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
+      const modeKey = (mode || 'generic').split('-')[0]; // nejm-toc → nejm
+      const selectors = ABSTRACT_SELECTORS[modeKey] || ABSTRACT_SELECTORS.generic;
+      for (const sel of selectors) {
+        const els = doc.querySelectorAll(sel);
+        if (els.length === 0) continue;
+        // Join multi-paragraph abstracts
+        const text = Array.from(els).map(p => p.textContent.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ');
+        if (text.length > 50) return text;
+      }
+      return '';
     } catch (e) { return ''; }
   }
 
@@ -258,15 +297,15 @@
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchAbstracts') {
-      const researchTypes = ['Article', 'Review Article', 'Perspective', 'Brief Communication'];
+      // Mode-aware abstract fetch (all journals). popup.js pre-filters via shouldFetch heuristics.
+      const fetchMode = request.mode || mode;
       (async () => {
         const results = [];
         for (const a of (request.articles || [])) {
-          if (researchTypes.includes(a.typeName) && a.fullUrl) {
-            const abs = await fetchNatureAbstract(a.fullUrl);
-            results.push({ index: a.index, abstract: abs });
-            await new Promise(r => setTimeout(r, 600));
-          }
+          if (!a.fullUrl) continue;
+          const abs = await fetchArticleAbstract(a.fullUrl, fetchMode);
+          results.push({ index: a.index, abstract: abs });
+          await new Promise(r => setTimeout(r, 600));  // polite rate
         }
         sendResponse({ results });
       })();

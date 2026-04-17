@@ -51,8 +51,47 @@ OA / Free-Access detection is best-effort per journal's HTML convention; closed/
 
 Supplements (NEJM) are appended with `_suppl`.
 
+## Markdown export (all modes)
+
+Every journal mode has a **Save MD** button. Exports the entire TOC as a structured Markdown file:
+
+```markdown
+---
+generated: 2026-04-17
+journal: Science
+type: raw
+source: toc
+article_count: 23
+oa_count: 5
+---
+
+# Science TOC — 2026-04-17 (issue 392-6791)
+
+## Research Article
+
+### 1. Article title here
+
+🟢 **Open Access** · 👤 Author et al.
+
+**DOI**: [10.1126/science.abc1234](https://doi.org/10.1126/science.abc1234)
+**Full text**: <https://www.science.org/doi/10.1126/science.abc1234>
+**PDF**: <https://www.science.org/doi/pdf/10.1126/science.abc1234>
+**ID**: `science.abc1234`
+
+> abstract paragraph here...
+
+---
+```
+
+Each article gets: title, OA badge, DOI link, full-text link, PDF link, article ID, and abstract (if fetched).
+
+### Fetch Abstracts button (all modes)
+
+Optional step: visits each article page and extracts the abstract via per-journal selectors. Run BEFORE Save MD to enrich the export.
+
 ## Changelog
 
+- **3.2** (2026-04-17) — Universal Markdown export across all modes (NEJM/Nature/Science/generic). Unified `fetchArticleAbstract` with per-journal selector maps. Fetch Abstracts button works for all journal modes (was Nature-only).
 - **3.1** (2026-04-17) — Added Science parser. OA via `.icon-access-full.text-access-free`. Renamed from "PDF Batch Downloader" → "Journal Downloader". New brand color for Science (#a60f2d).
 - **3.0** — Nature parser + abstract fetcher + TOC-to-Markdown export.
 - **2.x** — NEJM TOC parser with supplements.

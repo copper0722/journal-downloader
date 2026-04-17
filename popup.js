@@ -42,8 +42,9 @@ function renderList() {
 
   // Show/hide journal-specific buttons
   suppLabel.style.display = base === 'nejm' ? '' : 'none';
-  btnFetch.style.display = base === 'nature' ? '' : 'none';
-  btnSave.style.display = base === 'nature' ? '' : 'none';
+  // Fetch Abstracts + Save MD are now available for all journal modes (not generic)
+  btnFetch.style.display = base === 'generic' ? 'none' : '';
+  btnSave.style.display = base === 'generic' ? 'none' : '';
 
   if (articles.length === 0) {
     list.innerHTML = '<div class="empty">No PDF links found on this page.</div>';
@@ -174,14 +175,31 @@ async function startDownload() {
   btn.disabled = false;
 }
 
-// ── Nature: Fetch Abstracts ──
+// ── Fetch Abstracts (all modes) ──
+// Fetches article page HTML via content.js, extracts abstract using per-journal selectors.
 async function fetchAbstracts() {
   const btn = document.getElementById('btnFetchAbs');
   const statusEl = document.getElementById('status');
   const progressFill = document.getElementById('progressFill');
+  const base = modeBase();
 
-  const researchTypes = ['Article', 'Review Article', 'Perspective', 'Brief Communication'];
-  const toFetch = articles.map((a, i) => ({ ...a, index: i })).filter(a => researchTypes.includes(a.typeName) && a.fullUrl);
+  // Which article types to fetch abstracts for (skip editorials/letters/images etc. that typically have no abstract)
+  const shouldFetch = (a) => {
+    if (!a.fullUrl) return false;
+    // Skip obvious non-abstract types by name
+    const tn = (a.typeName || '').toLowerCase();
+    if (tn.match(/image|letter|correspond|correction|erratum|obituary|news/)) return false;
+    // If already has a substantial abstract, skip
+    if (a.abstract && a.abstract.length > 400) return false;
+    return true;
+  };
+
+  const toFetch = articles.map((a, i) => ({ ...a, index: i })).filter(shouldFetch);
+  if (toFetch.length === 0) {
+    statusEl.classList.add('active');
+    statusEl.textContent = 'Nothing to fetch (abstracts already present or skipped types).';
+    return;
+  }
 
   btn.disabled = true;
   statusEl.classList.add('active');
@@ -189,7 +207,7 @@ async function fetchAbstracts() {
 
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     if (!tabs[0]) return;
-    chrome.tabs.sendMessage(tabs[0].id, { action: 'fetchAbstracts', articles: toFetch }, response => {
+    chrome.tabs.sendMessage(tabs[0].id, { action: 'fetchAbstracts', articles: toFetch, mode: base }, response => {
       if (chrome.runtime.lastError || !response) {
         statusEl.textContent = 'Fetch failed. Reload page and retry.';
         btn.disabled = false;
@@ -215,29 +233,85 @@ async function fetchAbstracts() {
   }, 1000);
 }
 
-// ── Nature: Save MD ──
+// ── Save TOC as Markdown (all modes) ──
+// Unified MD export: each article gets full title, DOI, links (full text + PDF), type, authors, OA flag, abstract.
 function saveToMarkdown() {
+  const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  let md = `---\ngenerated: ${today}\njournal: Nature\ntype: raw\n---\n\n# Nature TOC — ${today}\n\n`;
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : 'TOC';
+
+  // Detect issue identifier from URL path (if any)
+  let issueTag = '';
+  const url = (articles[0] && (articles[0].fullUrl || articles[0].pdfUrl)) || location.href;
+  // NEJM: /toc/nejm/394/15  → 394_15
+  // Nature: /nature/volumes/652/issues/8108 → 652_8108
+  // Science: /toc/science/392/6791 → 392_6791
+  const m1 = url.match(/\/toc\/[^/]+\/(\d+)\/(\d+)/);
+  const m2 = url.match(/\/volumes\/(\d+)\/issues\/(\d+)/);
+  if (m1) issueTag = `_${m1[1]}-${m1[2]}`;
+  else if (m2) issueTag = `_${m2[1]}-${m2[2]}`;
+
+  const oaCount = articles.filter(a => a.isOA).length;
+  const totalArticles = articles.length;
+
+  let md = `---
+generated: ${today}
+journal: ${journalName}
+type: raw
+source: toc
+article_count: ${totalArticles}
+oa_count: ${oaCount}
+---
+
+# ${journalName} TOC — ${today}${issueTag ? ` (issue ${issueTag.substring(1)})` : ''}
+
+${totalArticles} articles · ${oaCount} open access / free
+
+`;
+
   let lastType = null;
-  articles.forEach(a => {
-    if (a.typeName && a.typeName !== lastType) { md += `## ${a.typeName}\n\n`; lastType = a.typeName; }
-    md += `### ${a.title}${a.isOA ? ' `OA`' : ''}\n`;
-    if (a.author) md += `**${a.author}**\n`;
-    if (a.abstract) md += `\n${a.abstract}\n`;
+  articles.forEach((a, i) => {
+    if (a.typeName && a.typeName !== lastType) {
+      md += `\n## ${a.typeName}\n\n`;
+      lastType = a.typeName;
+    }
+
+    md += `### ${i + 1}. ${a.title}\n\n`;
+
+    // Metadata line — OA flag + author
+    const meta = [];
+    if (a.isOA) meta.push('🟢 **Open Access**');
+    else if (a.isOA === false && base !== 'generic') meta.push('🔒 Paywall');
+    if (a.author) meta.push(`👤 ${a.author}`);
+    if (meta.length) md += meta.join(' · ') + '\n\n';
+
+    // Links block — DOI, Full text, PDF
     const links = [];
-    if (a.fullUrl && a.articleId) links.push(`[Full text](${a.fullUrl})`);
-    if (a.doi) links.push(`DOI: \`${a.doi}\``);
-    if (links.length) md += `\n${links.join(' | ')}\n`;
-    md += '\n';
+    if (a.doi) links.push(`**DOI**: [${a.doi}](https://doi.org/${a.doi})`);
+    if (a.fullUrl) links.push(`**Full text**: <${a.fullUrl}>`);
+    if (a.pdfUrl && a.hasPdf) links.push(`**PDF**: <${a.pdfUrl}>`);
+    if (a.articleId) links.push(`**ID**: \`${a.articleId}\``);
+    if (links.length) md += links.join('  \n') + '\n\n';
+
+    // Abstract (if present)
+    if (a.abstract) {
+      md += `> ${a.abstract}\n\n`;
+    }
+
+    md += '---\n\n';
   });
+
   const blob = new Blob([md], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename: `${today}_Nature_TOC.md`, conflictAction: 'uniquify' }, () => {
-    URL.revokeObjectURL(url);
-    document.getElementById('status').classList.add('active');
-    document.getElementById('status').textContent = `Saved MD.`;
-  });
+  const urlObj = URL.createObjectURL(blob);
+  chrome.downloads.download(
+    { url: urlObj, filename: `${today}_${journalName}_TOC${issueTag}.md`, conflictAction: 'uniquify' },
+    () => {
+      URL.revokeObjectURL(urlObj);
+      const statusEl = document.getElementById('status');
+      statusEl.classList.add('active');
+      statusEl.textContent = `Saved ${today}_${journalName}_TOC${issueTag}.md`;
+    }
+  );
 }
 
 function downloadFile(url, filename) {
