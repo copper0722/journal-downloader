@@ -296,8 +296,15 @@
       else if (mode === 'science-toc') articles = parseScience_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
+    } else if (request.action === 'fetchOneAbstract') {
+      // Single-article fetch (popup.js calls in parallel with its own batching).
+      (async () => {
+        const abs = await fetchArticleAbstract(request.url, request.mode || mode);
+        sendResponse({ abstract: abs });
+      })();
+      return true;
     } else if (request.action === 'fetchAbstracts') {
-      // Mode-aware abstract fetch (all journals). popup.js pre-filters via shouldFetch heuristics.
+      // Legacy batch fetch — kept for backward compat but no longer used by popup.js v3.3+.
       const fetchMode = request.mode || mode;
       (async () => {
         const results = [];
@@ -305,7 +312,7 @@
           if (!a.fullUrl) continue;
           const abs = await fetchArticleAbstract(a.fullUrl, fetchMode);
           results.push({ index: a.index, abstract: abs });
-          await new Promise(r => setTimeout(r, 600));  // polite rate
+          await new Promise(r => setTimeout(r, 600));
         }
         sendResponse({ results });
       })();

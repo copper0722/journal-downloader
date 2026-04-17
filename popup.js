@@ -40,11 +40,14 @@ function renderList() {
   const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', generic: 'PDF Batch Downloader' };
   headerTitle.textContent = titles[base];
 
-  // Show/hide journal-specific buttons
+  // 2-button UI:
+  //   btnFetch = "Fetch + Save MD" (combined, all journal modes)
+  //   btnDownload = "Download Selected" (always)
+  // btnSave (separate Save MD) hidden — merged into btnFetch action.
   suppLabel.style.display = base === 'nejm' ? '' : 'none';
-  // Fetch Abstracts + Save MD are now available for all journal modes (not generic)
   btnFetch.style.display = base === 'generic' ? 'none' : '';
-  btnSave.style.display = base === 'generic' ? 'none' : '';
+  btnFetch.textContent = 'Fetch + Save MD';
+  btnSave.style.display = 'none';
 
   if (articles.length === 0) {
     list.innerHTML = '<div class="empty">No PDF links found on this page.</div>';
@@ -175,62 +178,87 @@ async function startDownload() {
   btn.disabled = false;
 }
 
-// ── Fetch Abstracts (all modes) ──
-// Fetches article page HTML via content.js, extracts abstract using per-journal selectors.
-async function fetchAbstracts() {
+// ── Fetch + Save MD (combined action, all modes) ──
+// Fetches every article's abstract from its fulltext page in parallel (batched), then auto-saves the MD.
+// Replaces the old "Fetch Abstracts" + separate "Save MD" workflow.
+async function fetchAndSaveMd() {
   const btn = document.getElementById('btnFetchAbs');
   const statusEl = document.getElementById('status');
   const progressFill = document.getElementById('progressFill');
   const base = modeBase();
 
-  // Which article types to fetch abstracts for (skip editorials/letters/images etc. that typically have no abstract)
-  const shouldFetch = (a) => {
-    if (!a.fullUrl) return false;
-    // Skip obvious non-abstract types by name
-    const tn = (a.typeName || '').toLowerCase();
-    if (tn.match(/image|letter|correspond|correction|erratum|obituary|news/)) return false;
-    // If already has a substantial abstract, skip
-    if (a.abstract && a.abstract.length > 400) return false;
-    return true;
-  };
+  // Target: ALL articles with a fullUrl, regardless of type (News/Paywall included — MD may lack abstract but still captures title + DOI + link).
+  // Skip only if abstract already long enough (>400 chars) AND fullUrl missing
+  const toFetch = articles
+    .map((a, i) => ({ ...a, index: i }))
+    .filter(a => a.fullUrl && !(a.abstract && a.abstract.length > 400));
 
-  const toFetch = articles.map((a, i) => ({ ...a, index: i })).filter(shouldFetch);
   if (toFetch.length === 0) {
     statusEl.classList.add('active');
-    statusEl.textContent = 'Nothing to fetch (abstracts already present or skipped types).';
+    statusEl.textContent = 'No fetch needed — saving MD directly.';
+    progressFill.style.width = '100%';
+    saveToMarkdown();
     return;
   }
 
   btn.disabled = true;
   statusEl.classList.add('active');
-  statusEl.textContent = `Fetching abstracts from ${toFetch.length} article pages...`;
+  progressFill.style.width = '0%';
 
-  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-    if (!tabs[0]) return;
-    chrome.tabs.sendMessage(tabs[0].id, { action: 'fetchAbstracts', articles: toFetch, mode: base }, response => {
-      if (chrome.runtime.lastError || !response) {
-        statusEl.textContent = 'Fetch failed. Reload page and retry.';
-        btn.disabled = false;
-        return;
-      }
-      (response.results || []).forEach(r => { if (r.abstract) articles[r.index].abstract = r.abstract; });
-      const fetched = (response.results || []).filter(r => r.abstract).length;
-      statusEl.textContent = `Fetched ${fetched}/${toFetch.length} abstracts.`;
-      btn.textContent = 'Fetch Abstracts';
-      btn.disabled = false;
-      progressFill.style.width = '100%';
-      renderList();
+  // Parallel batching — 4 concurrent fetches. Each fetch has its own 8s timeout in content.js.
+  const BATCH = 4;
+  let completed = 0;
+  const total = toFetch.length;
+  const fetched = { n: 0 };
+
+  const updateUi = () => {
+    const pct = Math.round((completed / total) * 100);
+    progressFill.style.width = `${pct}%`;
+    btn.textContent = `Fetching ${completed}/${total} (${pct}%)`;
+    statusEl.textContent = `Fetching abstracts — ${completed}/${total} done, ${fetched.n} captured`;
+  };
+
+  const doOne = (article) => new Promise((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      if (!tabs[0]) { resolve(); return; }
+      chrome.tabs.sendMessage(
+        tabs[0].id,
+        { action: 'fetchOneAbstract', url: article.fullUrl, mode: base },
+        response => {
+          if (!chrome.runtime.lastError && response && response.abstract) {
+            articles[article.index].abstract = response.abstract;
+            fetched.n++;
+          }
+          completed++;
+          updateUi();
+          resolve();
+        }
+      );
     });
   });
 
-  let elapsed = 0;
-  const poll = setInterval(() => {
-    elapsed++;
-    const est = Math.min(elapsed / (toFetch.length * 0.8) * 100, 95);
-    progressFill.style.width = `${est}%`;
-    btn.textContent = `Fetching... ~${Math.round(est)}%`;
-    if (elapsed > toFetch.length * 2) clearInterval(poll);
-  }, 1000);
+  // Run in parallel batches of BATCH
+  const queue = toFetch.slice();
+  const workers = [];
+  for (let i = 0; i < BATCH; i++) {
+    workers.push((async () => {
+      while (queue.length > 0) {
+        const a = queue.shift();
+        await doOne(a);
+      }
+    })());
+  }
+  await Promise.all(workers);
+
+  progressFill.style.width = '100%';
+  statusEl.textContent = `Fetched ${fetched.n}/${total} abstracts. Saving MD...`;
+
+  renderList();
+  // Auto-save MD immediately after fetch completes
+  saveToMarkdown();
+
+  btn.textContent = 'Fetch + Save MD';
+  btn.disabled = false;
 }
 
 // ── Save TOC as Markdown (all modes) ──
@@ -351,8 +379,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btnDownload').addEventListener('click', startDownload);
-  document.getElementById('btnFetchAbs').addEventListener('click', fetchAbstracts);
-  document.getElementById('btnSaveMd').addEventListener('click', saveToMarkdown);
+  document.getElementById('btnFetchAbs').addEventListener('click', fetchAndSaveMd);
+  document.getElementById('btnSaveMd').addEventListener('click', saveToMarkdown);  // kept for backward compat (hidden)
   document.getElementById('selectAll').addEventListener('change', e => {
     document.querySelectorAll('.articleCb:not(:disabled)').forEach(cb => { cb.checked = e.target.checked; });
   });
