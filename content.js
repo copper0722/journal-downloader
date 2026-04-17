@@ -450,7 +450,7 @@
     } catch (e) { return ''; }
   }
 
-  async function fetchPageAbstract(url, mode) {
+  async function fetchPageData(url, mode) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
@@ -458,27 +458,43 @@
       clearTimeout(timeout);
       const html = await resp.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      const modeKey = (mode || 'generic').split('-')[0]; // nejm-toc → nejm
+
+      // Article type — publishers embed `<meta name="citation_article_type" content="...">`
+      // (also DC.Type / prism.aggregationType on some). One tag wins.
+      let articleType = '';
+      const typeMeta = doc.querySelector(
+        'meta[name="citation_article_type"], meta[name="DC.Type"], meta[name="prism.aggregationType"]'
+      );
+      if (typeMeta) articleType = (typeMeta.getAttribute('content') || '').trim();
+
+      // Abstract / lede
+      const modeKey = (mode || 'generic').split('-')[0];
       const selectors = ABSTRACT_SELECTORS[modeKey] || ABSTRACT_SELECTORS.generic;
+      let abstract = '';
       for (const sel of selectors) {
         const els = doc.querySelectorAll(sel);
         if (els.length === 0) continue;
-        // Join up to first 3 paragraphs (lede cap for News-style selectors); cap total chars at 1500.
         const pieces = Array.from(els).slice(0, 3).map(p => p.textContent.trim()).filter(Boolean);
         let text = pieces.join(' ').replace(/\s+/g, ' ');
         if (text.length > 1500) text = text.substring(0, 1500).replace(/\s+\S*$/, '') + '…';
-        if (text.length > 50) return text;
+        if (text.length > 50) { abstract = text; break; }
       }
-      return '';
-    } catch (e) { return ''; }
+      return { abstract, articleType };
+    } catch (e) { return { abstract: '', articleType: '' }; }
   }
 
-  // Hybrid fetch: Crossref first (fast, CORS-open, publisher-metadata), fall back to HTML scrape.
-  // doi argument is optional — when absent, behaves like legacy v3.3 (page scrape only).
+  // Hybrid fetch: Crossref first for abstract (fast, CORS-open). Page fetch supplies abstract fallback
+  // + citation_article_type meta. When Crossref wins on abstract, page fetch still runs to grab type
+  // (cheap — most pages' head-only section contains the meta).
   async function fetchArticleAbstract(url, mode, doi) {
-    const fromCrossref = await fetchCrossrefAbstract(doi);
-    if (fromCrossref) return fromCrossref;
-    return await fetchPageAbstract(url, mode);
+    // Kick off both in parallel; decide the pair from results.
+    const crossrefPromise = fetchCrossrefAbstract(doi);
+    const pagePromise = fetchPageData(url, mode);
+    const [fromCrossref, fromPage] = await Promise.all([crossrefPromise, pagePromise]);
+    return {
+      abstract: fromCrossref || fromPage.abstract || '',
+      articleType: fromPage.articleType || '',
+    };
   }
 
   // ── NEJM supplement parser ──
@@ -514,8 +530,8 @@
     } else if (request.action === 'fetchOneAbstract') {
       // Single-article fetch (popup.js calls in parallel with its own batching).
       (async () => {
-        const abs = await fetchArticleAbstract(request.url, request.mode || mode, request.doi);
-        sendResponse({ abstract: abs });
+        const res = await fetchArticleAbstract(request.url, request.mode || mode, request.doi);
+        sendResponse({ abstract: res.abstract, articleType: res.articleType });
       })();
       return true;
     } else if (request.action === 'fetchAbstracts') {
@@ -525,8 +541,8 @@
         const results = [];
         for (const a of (request.articles || [])) {
           if (!a.fullUrl) continue;
-          const abs = await fetchArticleAbstract(a.fullUrl, fetchMode, a.doi);
-          results.push({ index: a.index, abstract: abs });
+          const res = await fetchArticleAbstract(a.fullUrl, fetchMode, a.doi);
+          results.push({ index: a.index, abstract: res.abstract, articleType: res.articleType });
           await new Promise(r => setTimeout(r, 600));
         }
         sendResponse({ results });

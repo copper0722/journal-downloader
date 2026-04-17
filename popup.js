@@ -230,9 +230,14 @@ async function fetchAndSaveMd() {
         tabs[0].id,
         { action: 'fetchOneAbstract', url: article.fullUrl, doi: article.doi, mode: base },
         response => {
-          if (!chrome.runtime.lastError && response && response.abstract) {
-            articles[article.index].abstract = response.abstract;
-            fetched.n++;
+          if (!chrome.runtime.lastError && response) {
+            if (response.abstract) {
+              articles[article.index].abstract = response.abstract;
+              fetched.n++;
+            }
+            if (response.articleType && !articles[article.index].articleType) {
+              articles[article.index].articleType = response.articleType;
+            }
           }
           completed++;
           updateUi();
@@ -316,10 +321,13 @@ ${totalArticles} articles · ${oaCount} open access / free
 
     md += `### ${i + 1}. ${a.title}\n\n`;
 
-    // Metadata line — OA flag + author
+    // Metadata line — article type + OA flag + author
     const meta = [];
-    if (a.isOA) meta.push('🟢 **Open Access**');
-    else if (a.isOA === false && base === 'bmj') meta.push('🔓 Free to read');  // BMJ non-OA ≈ free (not gold OA, but PDF is open)
+    // Article type: citation_article_type meta (from page fetch) trumps TOC section heading.
+    const atype = a.articleType || a.typeName || '';
+    if (atype) meta.push(`**${atype}**`);
+    if (a.isOA) meta.push('🟢 Open Access');
+    else if (a.isOA === false && base === 'bmj') meta.push('🔓 Free to read');
     else if (a.isOA === false && base !== 'generic') meta.push('🔒 Paywall');
     if (a.author) meta.push(`👤 ${a.author}`);
     if (meta.length) md += meta.join(' · ') + '\n\n';
