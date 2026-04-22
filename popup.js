@@ -20,6 +20,7 @@ function modeBase() {
   if (pageMode.startsWith('science')) return 'science';
   if (pageMode.startsWith('lancet')) return 'lancet';
   if (pageMode.startsWith('bmj')) return 'bmj';
+  if (pageMode.startsWith('aim')) return 'aim';
   return 'generic';
 }
 
@@ -39,7 +40,7 @@ function renderList() {
   progressFill.className = `fill ${base}`;
   btn.className = `btn-dl btn-${base}`;
 
-  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', bmj: 'BMJ Downloader', generic: 'PDF Batch Downloader' };
+  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', bmj: 'BMJ Downloader', aim: 'Annals of IM Downloader', generic: 'PDF Batch Downloader' };
   headerTitle.textContent = titles[base];
 
   // 2-button UI:
@@ -88,6 +89,11 @@ function renderList() {
     } else if (base === 'bmj') {
       badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Free</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
+    } else if (base === 'aim') {
+      // AIM has no TOC-level OA flag; show section as type badge + "Subscription" hint.
+      // User's institutional cookie determines actual download success.
+      if (a.typeName) badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
+      badges += ' <span class="badge closed">Subscription?</span>';
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
     }
@@ -276,7 +282,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -293,6 +299,11 @@ function saveToMarkdown() {
   else if (m2) issueTag = `_${m2[1]}-${m2[2]}`;
   else if (m3) issueTag = `_${m3[1]}-${m3[2]}`;
   else if (m4) issueTag = `_${m4[1]}-${m4[2]}`;
+  // AIM /toc/aim/current → extract Vol/No from document.title "Annals of Internal Medicine: Vol 179, No 4"
+  if (!issueTag && base === 'aim') {
+    const tm = document.title.match(/Vol\s+(\d+)[,\s]+No\s+(\d+)/i);
+    if (tm) issueTag = `_${tm[1]}-${tm[2]}`;
+  }
 
   const oaCount = articles.filter(a => a.isOA).length;
   const totalArticles = articles.length;

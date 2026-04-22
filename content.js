@@ -15,6 +15,8 @@
     if (host.includes('thelancet.com') && path.includes('/article/PIIS0140-6736')) return 'lancet-article';
     if (host.includes('bmj.com') && path.match(/^\/content\/\d+\/\d+\/?$/)) return 'bmj-toc';
     if (host.includes('bmj.com') && path.match(/^\/content\/\d+\/bmj\./)) return 'bmj-article';
+    if (host.includes('acpjournals.org') && path.match(/^\/toc\/aim\//)) return 'aim-toc';
+    if (host.includes('acpjournals.org') && path.match(/^\/doi\/10\.7326\//)) return 'aim-article';
     return 'generic';
   }
 
@@ -369,6 +371,102 @@
     return articles;
   }
 
+  // ── Annals of Internal Medicine TOC parser ──
+  // DOM verified 2026-04-22 via chrome-devtools MCP against acpjournals.org/toc/aim/current
+  // (Atypon-based, shares platform family with Science but distinct class schema):
+  //   container:       div.issue-item (56 per current issue, Vol 179 No 4)
+  //   section wrapper: h5.titled_issues__title.to-section.{slug} precedes a contiguous group
+  //                    of div.issue-item in DOM order (no nesting).
+  //                    18 sections observed: Original Research / Reviews / Research and
+  //                    Reporting Methods / Clinical Guidelines / Beyond the Guidelines /
+  //                    Position Papers / Special Articles / Ideas and Opinions / Editorials /
+  //                    On Being a Doctor / Letters / Corrections / Ad Libitum / In the Clinic /
+  //                    I.M. Matters News / ACP Journal Club / Web Exclusives /
+  //                    Summaries for Patients
+  //   title:           .issue-item__title a > h5 (main) + optional .sub-title sibling inside a
+  //   DOI:             title anchor href = /doi/10.7326/{articleId}; articleId = ANNALS-YY-NNNNN
+  //                    (e.g. ANNALS-25-03660) — ACP migrated from M{N}-{N}/L{N}-{N} to ANNALS-*
+  //                    prefix in 2024
+  //   authors:         .issue-item__authors > ul.loa > li, interspersed with separator <li>s
+  //                    containing only ","/" and "/et-al read-more link — filter on length + regex
+  //   TOC abstract:    .issue__item__abstract — AIM renders a 2-4 sentence summary directly on
+  //                    the TOC (unlike Lancet/BMJ which require page fetch). Use as-is.
+  //   PDF link:        NOT rendered on TOC (Atypon lazy-loads on click). Construct canonical
+  //                    /doi/pdf/{doi} URL — resolves to PDF when user has subscription cookies,
+  //                    else returns login page. Same behaviour as Science parser.
+  //   OA marker:       AIM TOC exposes NO open-access indicator. Most AIM content is subscription-
+  //                    gated; some (Clinical Guidelines, Summaries for Patients, select Editorials)
+  //                    are free-to-read but the signal lives only on the article page. Default
+  //                    hasPdf=true (permissive, BMJ-style): rely on Copper's institutional cookie
+  //                    rather than pre-filter. isOA=false as safe default, unlikely to match MD
+  //                    output's 🟢 flag.
+  function parseAIM_TOC() {
+    // Walk h5-section-headers + issue-items together in document order so each item can be
+    // tagged with its preceding section heading (same pattern as BMJ parseBMJ_TOC).
+    const walked = document.querySelectorAll('h5.titled_issues__title.to-section, div.issue-item');
+    const articles = [];
+    const seen = new Set();
+    let currentSection = '';
+    walked.forEach(el => {
+      if (el.tagName === 'H5') {
+        currentSection = el.textContent.trim().replace(/\s+/g, ' ');
+        return;
+      }
+      // issue-item
+      const titleAnchor = el.querySelector('.issue-item__title a');
+      if (!titleAnchor) return;
+      const href = titleAnchor.getAttribute('href') || '';
+      const doiMatch = href.match(/\/doi\/(10\.7326\/[^?#]+)/);
+      if (!doiMatch) return;
+      const doi = doiMatch[1];
+      if (seen.has(doi)) return;
+      seen.add(doi);
+
+      // Title — main heading inside anchor, optionally followed by sub-title
+      const titleEl = titleAnchor.querySelector('h5, h4, h3, h2');
+      const mainTitle = (titleEl || titleAnchor).textContent.trim().replace(/\s+/g, ' ');
+      const subEl = titleAnchor.querySelector('.sub-title');
+      const sub = subEl ? subEl.textContent.trim().replace(/\s+/g, ' ') : '';
+      // mainTitle already includes sub via textContent concatenation inside h5 block, so check suffix
+      const title = sub && !mainTitle.endsWith(sub) ? `${mainTitle} — ${sub}` : mainTitle;
+
+      // Authors from loa list — filter separator/empty/et-al items.
+      // AIM loa wraps an ellipsis + et-al read-more link as one <li>; filter bare "…"/"," items
+      // and strip trailing truncation ellipsis.
+      const authorLis = el.querySelectorAll('.issue-item__authors ul.loa > li');
+      let author = Array.from(authorLis)
+        .map(li => li.textContent.trim().replace(/ /g, ' ').replace(/\s+/g, ' '))
+        .filter(t => t && t.length > 2 && !/^[,\s]+$/.test(t) && !/^and$/i.test(t) && !/^…$/.test(t))
+        .map(t => t.replace(/,?\s*et al\..*/i, '').replace(/\s*…\s*$/, '').replace(/,$/, '').trim())
+        .filter(Boolean)
+        .join(', ')
+        .substring(0, 200);
+      author = author.replace(/(?:,\s*)?…\s*$/, '').trim();
+
+      const articleId = doi.replace(/^10\.7326\//, '');
+
+      // Inline TOC abstract
+      const absEl = el.querySelector('.issue__item__abstract');
+      const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
+
+      articles.push({
+        doi,
+        articleId,
+        title,
+        abstract,
+        pdfUrl: `https://www.acpjournals.org/doi/pdf/${doi}`,
+        fullUrl: `https://www.acpjournals.org/doi/${doi}`,
+        author,
+        typeCode: '',
+        typeName: currentSection,  // section heading drives type
+        hasPdf: true,              // permissive — subscription cookies gate actual download
+        isOA: false,               // no TOC-level signal; stays false
+        journal: 'AIM',
+      });
+    });
+    return articles;
+  }
+
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
   const ABSTRACT_SELECTORS = {
@@ -414,6 +512,17 @@
       'div.article.fulltext-view > p',
       'div.fulltext-view > p',
       '.fulltext-view > p',
+    ],
+    aim: [
+      // Atypon standard abstract locations on acpjournals.org/doi/10.7326/*
+      'section[role="doc-abstract"] p',
+      'section#abstract p',
+      'div#abstract p',
+      '.hlFld-Abstract p',
+      'div[class*="abstractInFull"] p',
+      'div[class*="abstract"] p',
+      // Fallback: the TOC-level summary is also echoed on article page
+      '.article__summary p',
     ],
     generic: [
       'section#abstract p',
@@ -526,6 +635,7 @@
       else if (mode === 'science-toc') articles = parseScience_TOC();
       else if (mode === 'lancet-toc') articles = parseLancet_TOC();
       else if (mode === 'bmj-toc') articles = parseBMJ_TOC();
+      else if (mode === 'aim-toc') articles = parseAIM_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {

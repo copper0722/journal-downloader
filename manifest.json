@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Journal Downloader",
-  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science, Lancet, BMJ. Hybrid abstract fetch: Crossref API first → HTML scrape fallback. v3.9: per-article Article Type (citation_article_type/DC.Type meta) captured during page fetch, emitted in MD meta line — solves Comment section ambiguity (Letter vs Editorial vs Column).",
-  "version": "3.9.1",
+  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science, Lancet, BMJ, Annals of Internal Medicine. Hybrid abstract fetch: Crossref API first → HTML scrape fallback. v3.10: Annals parser (acpjournals.org/toc/aim) — 56-item current-issue walk, 18 section types, inline TOC summary captured (no fetch needed for short-abstract MD).",
+  "version": "3.10.0",
   "permissions": ["downloads", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],
   "action": {
