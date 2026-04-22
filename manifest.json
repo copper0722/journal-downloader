@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Journal Downloader",
-  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science, Lancet, BMJ, Annals of Internal Medicine. Hybrid abstract fetch: Crossref API first → HTML scrape fallback. v3.10: Annals parser (acpjournals.org/toc/aim) — 56-item current-issue walk, 18 section types, inline TOC summary captured (no fetch needed for short-abstract MD).",
-  "version": "3.10.0",
+  "description": "Batch download PDFs from journal TOC pages + export TOC to Markdown with full title/DOI/links/abstract. Parsers: NEJM, Nature, Science, Lancet, BMJ, Annals of Internal Medicine, JAMA. Hybrid abstract fetch: Crossref API first → HTML scrape fallback. v3.11 (2026-04-22): JAMA parser (jamanetwork.com/journals/jama/currentissue) — 21 section types, strict OA gate (hasPdf = `.badge.icon-free`; non-OA checkbox disabled per bug-fix) to prevent paywall-HTML masquerading as PDF. v3.10: AIM parser (acpjournals.org/toc/aim) — 18 section types, inline TOC summary captured.",
+  "version": "3.11.0",
   "permissions": ["downloads", "activeTab", "scripting"],
   "host_permissions": ["<all_urls>"],
   "action": {

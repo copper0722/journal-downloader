@@ -17,6 +17,8 @@
     if (host.includes('bmj.com') && path.match(/^\/content\/\d+\/bmj\./)) return 'bmj-article';
     if (host.includes('acpjournals.org') && path.match(/^\/toc\/aim\//)) return 'aim-toc';
     if (host.includes('acpjournals.org') && path.match(/^\/doi\/10\.7326\//)) return 'aim-article';
+    if (host.includes('jamanetwork.com') && path.match(/\/currentissue|\/issue\//)) return 'jama-toc';
+    if (host.includes('jamanetwork.com') && path.match(/\/fullarticle\/|\/article-abstract\//)) return 'jama-article';
     return 'generic';
   }
 
@@ -467,6 +469,113 @@
     return articles;
   }
 
+  // ── JAMA TOC parser ──
+  // DOM verified 2026-04-22 via chrome-devtools MCP against jamanetwork.com/journals/jama/currentissue.
+  // Bug fix context (Copper 2026-04-22): JAMA non-OA articles expose a /articlepdf/ link in DOM but
+  // the server gates access via `/Content/CheckPdfAccess` AJAX endpoint. Generic parser previously
+  // grabbed every .pdf link → user tried download → got paywall HTML masquerading as PDF. STRICT OA
+  // gate per Copper directive: hasPdf = isOA; non-OA articles rendered with disabled checkbox in popup.
+  //
+  // DOM:
+  //   section header:   div.issue-group.group--{slug}  (slugs: this-week-in-jama / multimedia /
+  //                     original-investigation / research-letter / research-summary / viewpoint /
+  //                     perspective / a-piece-of-my-mind / editorial / review / jama-insights /
+  //                     jama-patient-page / medical-news / medical-news-in-brief / poetry-and-medicine /
+  //                     jama-revisited / comment- / correction / jama-masthead /
+  //                     jama-guide-to-statistics-and-methods / editor) — 21 sections on current issue.
+  //   article wrapper:  div.issue-group-articles > div.article (46 items current)
+  //   title:            h3.article--title > a (textContent, may contain span.subtitle)
+  //   sub-section hint: h4.superClassification inside div.article (e.g., "Caring for the Critically Ill Patient")
+  //   DOI:              div.article--citation .meta-citation text → match /10\.1001\/[^\s]+/
+  //   authors:          div.article--authors (strip " et al.")
+  //   abstract/excerpt: div.article--excerpt p.para (TOC-inline summary, present on most items)
+  //   PDF anchor:       a.pdf.pdfaccess.js-pdfaccess[data-article-id][data-ajax-url="/Content/CheckPdfAccess"]
+  //   article ID:       data-article-id attribute (e.g., 2846530) — numeric, distinct from DOI
+  //   fullUrl:          title anchor href (absolute https://jamanetwork.com/journals/jama/fullarticle/{id})
+  //   OA flag:          div.badges > span.badge.icon-free  (sr-text "free access") ← authoritative
+  //                     All other badges (icon-online_only, icon-audio, icon-quiz_cme, ...) = metadata,
+  //                     NOT access indicators. Ignore.
+  function parseJAMA_TOC() {
+    const walked = document.querySelectorAll('div.issue-group, div.issue-group-articles > div.article');
+    const articles = [];
+    const seen = new Set();
+    let currentSection = '';
+    walked.forEach(el => {
+      if (el.classList && el.classList.contains('issue-group')) {
+        const m = String(el.className || '').match(/group--([\w-]+)/);
+        if (m) {
+          // Slug → display name: "original-investigation" → "Original Investigation"
+          currentSection = m[1].replace(/-$/, '').split('-')
+            .map(w => w ? w[0].toUpperCase() + w.slice(1) : '').join(' ').trim();
+        } else {
+          currentSection = '';
+        }
+        return;
+      }
+      // div.article under issue-group-articles
+      const titleAnchor = el.querySelector('.article--title a');
+      if (!titleAnchor) return;
+      const fullUrl = titleAnchor.href;
+
+      // DOI extraction from citation text
+      const citationEl = el.querySelector('.article--citation .meta-citation, .article--citation');
+      const citationText = citationEl ? citationEl.textContent : '';
+      const doiMatch = citationText.match(/10\.1001\/[^\s]+/);
+      if (!doiMatch) return;
+      const doi = doiMatch[0].replace(/[.,;]$/, '');
+      if (seen.has(doi)) return;
+      seen.add(doi);
+
+      // Title (flatten subtitle into a single string with " — " separator)
+      const subtitleEl = titleAnchor.querySelector('.subtitle');
+      let title;
+      if (subtitleEl) {
+        const mainText = titleAnchor.childNodes[0]?.textContent?.trim() || '';
+        const sub = subtitleEl.textContent.trim().replace(/^\s*:\s*/, '').replace(/\s+/g, ' ');
+        title = (mainText ? mainText.trim() + ' — ' : '') + sub;
+      } else {
+        title = titleAnchor.textContent.trim().replace(/\s+/g, ' ');
+      }
+      // Optional sub-section classification (e.g., "Caring for the Critically Ill Patient")
+      const superClass = el.querySelector('h4.superClassification');
+      if (superClass) {
+        title = `[${superClass.textContent.trim()}] ${title}`;
+      }
+
+      const authorEl = el.querySelector('.article--authors');
+      const author = authorEl
+        ? authorEl.textContent.trim().replace(/\s+/g, ' ').replace(/\s*;?\s*et al\.\s*$/, '').substring(0, 200)
+        : '';
+
+      const absEl = el.querySelector('.article--excerpt p.para, .article--excerpt');
+      const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
+
+      // OA gate — strict JAMA rule per Copper 2026-04-22 bug fix
+      const isOA = !!el.querySelector('.badges .badge.icon-free');
+
+      // PDF URL from explicit anchor; fall back to constructed path
+      const pdfAnchor = el.querySelector('a.pdf.pdfaccess, a.pdfaccess');
+      const pdfHref = pdfAnchor ? pdfAnchor.getAttribute('href') : '';
+      const articleId = (pdfAnchor && pdfAnchor.getAttribute('data-article-id')) || doi.replace(/^10\.1001\//, '');
+
+      articles.push({
+        doi,
+        articleId,
+        title,
+        abstract,
+        pdfUrl: pdfHref || `https://jamanetwork.com/journals/jama/articlepdf/${articleId}`,
+        fullUrl,
+        author,
+        typeCode: '',
+        typeName: currentSection,
+        hasPdf: isOA,   // STRICT: non-OA NOT downloadable — Copper 2026-04-22 bug fix
+        isOA,
+        journal: 'JAMA',
+      });
+    });
+    return articles;
+  }
+
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
   const ABSTRACT_SELECTORS = {
@@ -523,6 +632,15 @@
       'div[class*="abstract"] p',
       // Fallback: the TOC-level summary is also echoed on article page
       '.article__summary p',
+    ],
+    jama: [
+      // JAMA Network platform (Silverchair) — article abstracts on /fullarticle/ and /article-abstract/
+      'div.abstract-content p',
+      'section.abstract p',
+      'div.abstract p',
+      '#ArticleAbstract p',
+      'div[class*="abstract"] p',
+      '.article-full-text .abstract p',
     ],
     generic: [
       'section#abstract p',
@@ -636,6 +754,7 @@
       else if (mode === 'lancet-toc') articles = parseLancet_TOC();
       else if (mode === 'bmj-toc') articles = parseBMJ_TOC();
       else if (mode === 'aim-toc') articles = parseAIM_TOC();
+      else if (mode === 'jama-toc') articles = parseJAMA_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {

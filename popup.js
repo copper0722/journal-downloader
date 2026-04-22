@@ -21,6 +21,7 @@ function modeBase() {
   if (pageMode.startsWith('lancet')) return 'lancet';
   if (pageMode.startsWith('bmj')) return 'bmj';
   if (pageMode.startsWith('aim')) return 'aim';
+  if (pageMode.startsWith('jama')) return 'jama';
   return 'generic';
 }
 
@@ -40,7 +41,7 @@ function renderList() {
   progressFill.className = `fill ${base}`;
   btn.className = `btn-dl btn-${base}`;
 
-  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', bmj: 'BMJ Downloader', aim: 'Annals of IM Downloader', generic: 'PDF Batch Downloader' };
+  const titles = { nejm: 'NEJM Downloader', nature: 'Nature Downloader', science: 'Science Downloader', lancet: 'Lancet Downloader', bmj: 'BMJ Downloader', aim: 'Annals of IM Downloader', jama: 'JAMA Downloader', generic: 'PDF Batch Downloader' };
   headerTitle.textContent = titles[base];
 
   // 2-button UI:
@@ -94,6 +95,12 @@ function renderList() {
       // User's institutional cookie determines actual download success.
       if (a.typeName) badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
       badges += ' <span class="badge closed">Subscription?</span>';
+    } else if (base === 'jama') {
+      // JAMA has explicit .badge.icon-free OA flag — STRICT gate per Copper 2026-04-22
+      // (non-OA articles' PDFs are server-gated via /Content/CheckPdfAccess, generic
+      // grabbing produces paywall HTML). hasPdf=isOA + checkbox disabled for non-OA.
+      badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Paywall</span>';
+      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
     }
@@ -282,7 +289,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -303,6 +310,13 @@ function saveToMarkdown() {
   if (!issueTag && base === 'aim') {
     const tm = document.title.match(/Vol\s+(\d+)[,\s]+No\s+(\d+)/i);
     if (tm) issueTag = `_${tm[1]}-${tm[2]}`;
+  }
+  // JAMA /journals/jama/currentissue → extract from first article's citation "JAMA. YYYY;VVV(II):pp-pp."
+  if (!issueTag && base === 'jama') {
+    const firstCit = document.querySelector('.article--citation .meta-citation');
+    const ct = firstCit ? firstCit.textContent : '';
+    const m = ct.match(/\d{4};(\d+)\((\d+)\)/);
+    if (m) issueTag = `_${m[1]}-${m[2]}`;
   }
 
   const oaCount = articles.filter(a => a.isOA).length;
