@@ -83,7 +83,7 @@ function renderList() {
     if (base === 'nature') {
       badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Closed</span>';
     } else if (base === 'science') {
-      badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Paywall</span>';
+      badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'nejm' && a.typeName) {
       badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
@@ -91,15 +91,14 @@ function renderList() {
       badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Free</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'aim') {
-      // AIM has no TOC-level OA flag; show section as type badge + "Subscription" hint.
-      // User's institutional cookie determines actual download success.
+      // AIM has no reliable TOC-level OA flag; keep it metadata-only.
       if (a.typeName) badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
-      badges += ' <span class="badge closed">Subscription?</span>';
+      badges += ' <span class="badge closed">Metadata</span>';
     } else if (base === 'jama') {
       // JAMA has explicit .badge.icon-free OA flag — STRICT gate per Copper 2026-04-22
       // (non-OA articles' PDFs are server-gated via /Content/CheckPdfAccess, generic
       // grabbing produces paywall HTML). hasPdf=isOA + checkbox disabled for non-OA.
-      badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Paywall</span>';
+      badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
@@ -205,7 +204,7 @@ async function fetchAndSaveMd() {
   const progressFill = document.getElementById('progressFill');
   const base = modeBase();
 
-  // Target: ALL articles with a fullUrl, regardless of type (News/Paywall included — MD may lack abstract but still captures title + DOI + link).
+  // Target: all articles with a fullUrl; non-OA/subscription entries are metadata-only.
   // Skip only if abstract already long enough (>400 chars) AND fullUrl missing
   const toFetch = articles
     .map((a, i) => ({ ...a, index: i }))
@@ -353,7 +352,7 @@ ${totalArticles} articles · ${oaCount} open access / free
     if (atype) meta.push(`**${atype}**`);
     if (a.isOA) meta.push('🟢 Open Access');
     else if (a.isOA === false && base === 'bmj') meta.push('🔓 Free to read');
-    else if (a.isOA === false && base !== 'generic') meta.push('🔒 Paywall');
+    else if (a.isOA === false && base !== 'generic') meta.push('Metadata only');
     if (a.author) meta.push(`👤 ${a.author}`);
     if (meta.length) md += meta.join(' · ') + '\n\n';
 

@@ -1,5 +1,4 @@
-// PDF Batch Downloader — Content Script
-// Generic PDF detection + enhanced parsers for NEJM / Nature / Science
+// Journal TOC metadata + OA PDF downloader — Content Script
 
 (function () {
   function detectMode() {
@@ -112,7 +111,9 @@
         fullUrl: `https://www.nejm.org/doi/full/${doi}`,
         author: authorInput ? authorInput.value.trim().replace(/\s+/g, ' ') : '',
         typeCode, typeName: typeLabels[typeCode] || typeCode.toUpperCase(),
-        hasPdf: !!pdfLink, isOA: true, journal: 'NEJM',
+        // NEJM TOC does not provide a reliable public OA download signal here.
+        // Keep entries metadata-only unless a future explicit OA marker is added.
+        hasPdf: false, isOA: false, journal: 'NEJM',
       });
     });
     return articles;
@@ -393,15 +394,9 @@
   //                    containing only ","/" and "/et-al read-more link — filter on length + regex
   //   TOC abstract:    .issue__item__abstract — AIM renders a 2-4 sentence summary directly on
   //                    the TOC (unlike Lancet/BMJ which require page fetch). Use as-is.
-  //   PDF link:        NOT rendered on TOC (Atypon lazy-loads on click). Construct canonical
-  //                    /doi/pdf/{doi} URL — resolves to PDF when user has subscription cookies,
-  //                    else returns login page. Same behaviour as Science parser.
-  //   OA marker:       AIM TOC exposes NO open-access indicator. Most AIM content is subscription-
-  //                    gated; some (Clinical Guidelines, Summaries for Patients, select Editorials)
-  //                    are free-to-read but the signal lives only on the article page. Default
-  //                    hasPdf=true (permissive, BMJ-style): rely on Copper's institutional cookie
-  //                    rather than pre-filter. isOA=false as safe default, unlikely to match MD
-  //                    output's 🟢 flag.
+  //   PDF link:        not rendered on TOC.
+  //   OA marker:       AIM TOC exposes no reliable open-access indicator. Public build keeps
+  //                    AIM entries metadata-only to avoid downloading subscription-gated PDFs.
   function parseAIM_TOC() {
     // Walk h5-section-headers + issue-items together in document order so each item can be
     // tagged with its preceding section heading (same pattern as BMJ parseBMJ_TOC).
@@ -456,13 +451,13 @@
         articleId,
         title,
         abstract,
-        pdfUrl: `https://www.acpjournals.org/doi/pdf/${doi}`,
+        pdfUrl: '',
         fullUrl: `https://www.acpjournals.org/doi/${doi}`,
         author,
         typeCode: '',
         typeName: currentSection,  // section heading drives type
-        hasPdf: true,              // permissive — subscription cookies gate actual download
-        isOA: false,               // no TOC-level signal; stays false
+        hasPdf: false,
+        isOA: false,
         journal: 'AIM',
       });
     });

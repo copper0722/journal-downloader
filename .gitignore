@@ -1,4 +1,9 @@
 .DS_Store
+__pycache__/
+*.pyc
+*.bak-*
+.env
+.env.*
 *.crx
 *.pem
 *.zip
