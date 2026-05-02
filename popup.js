@@ -261,8 +261,9 @@ function renderList() {
   const downloadable = articles.filter(a => a.hasPdf);
   countLabel.textContent = base === 'generic'
     ? `${articles.length} PDFs found`
-    : `${articles.length} articles · ${downloadable.length} downloadable`;
-  btn.disabled = downloadable.length === 0;
+    : `${articles.length} articles · ${downloadable.length} default-on (manual override allowed)`;
+  // Button enable/disable is wired to actual checkbox state (see
+  // updateDownloadButtonState below) — set after render + bound to change events.
 
   let html = '';
   let lastType = null;
@@ -275,7 +276,9 @@ function renderList() {
     }
 
     const checked = a.hasPdf ? 'checked' : '';
-    const disabled = a.hasPdf ? '' : 'disabled';
+    // No `disabled` attribute — Copper directive 2026-05-02: user must always
+    // be able to manually tick a non-default entry (e.g. a Clinical Research
+    // article in CJASN) and download it.
 
     let badges = '';
     if (base === 'nature') {
@@ -303,12 +306,12 @@ function renderList() {
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'lww') {
       // LWW (JASN/CJASN/...) — TOC has no OA flag; whole platform is subscription-based.
-      // hasPdf is set in content.js parser by narrative-review section whitelist
-      // (Copper directive 2026-05-02): JASN/CJASN are subscribed, so articles in
-      // narrative-review sections (Mechanisms of Kidney Diseases / Clinical Nephrology
-      // Insights / Innovator Corner / Designing Clinical Trials / Perspective / Review)
-      // auto-flag for download; other sections are metadata-only.
-      badges = a.hasPdf ? '<span class="badge oa">Sub. + DL</span>' : '<span class="badge closed">Subscription</span>';
+      // hasPdf is set in content.js parser by section BLACKLIST (Copper directive
+      // 2026-05-02, CJASN-led, generalised to LWW): hasPdf=false for
+      // Clinical Research / Letter to the Editor / About the Cover; hasPdf=true
+      // for everything else. Manual override always available (checkbox never
+      // disabled in v3.15.0+).
+      badges = a.hasPdf ? '<span class="badge oa">Sub. + DL</span>' : '<span class="badge closed">Excluded (manual OK)</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
@@ -327,7 +330,7 @@ function renderList() {
 
     html += `
     <div class="item" data-index="${i}">
-      <input type="checkbox" class="articleCb" data-index="${i}" ${checked} ${disabled}>
+      <input type="checkbox" class="articleCb" data-index="${i}" ${checked}>
       <div class="info">
         <div class="title">${escHtml(a.title)}</div>
         ${urlHtml}${abstractHtml}
@@ -343,6 +346,20 @@ function renderList() {
   list.querySelectorAll('.abstract').forEach(el => {
     el.addEventListener('click', () => el.classList.toggle('expanded'));
   });
+  // v3.15.0: download button tracks actual checkbox state (any check = enabled),
+  // so manual override of default-off entries (e.g. CJASN Clinical Research)
+  // re-enables the button.
+  list.querySelectorAll('.articleCb').forEach(cb => {
+    cb.addEventListener('change', updateDownloadButtonState);
+  });
+  updateDownloadButtonState();
+}
+
+function updateDownloadButtonState() {
+  const btn = document.getElementById('btnDownload');
+  if (!btn) return;
+  const checkedCount = document.querySelectorAll('.articleCb:checked').length;
+  btn.disabled = checkedCount === 0;
 }
 
 // ── Download PDFs ──
@@ -780,7 +797,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('btnSaveMd').addEventListener('click', saveToMarkdown);  // kept for backward compat (hidden)
   document.getElementById('selectAll').addEventListener('change', e => {
-    document.querySelectorAll('.articleCb:not(:disabled)').forEach(cb => { cb.checked = e.target.checked; });
+    document.querySelectorAll('.articleCb').forEach(cb => { cb.checked = e.target.checked; });
+    updateDownloadButtonState();
   });
 
   // Add-journal modal wiring

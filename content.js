@@ -606,18 +606,20 @@
   //   TODO: verify against article page download button; if pattern fails, replace
   //   with a 2-step fetch (fetch fulltext page → extract download.lww.com signed URL).
   function parseLWW_TOC() {
-    // Narrative-review section whitelist — Copper 2026-05-02. Subscribed JASN/CJASN
-    // articles in these sections are always download-eligible regardless of OA flag.
-    // Substring match (case-insensitive) against the section heading text.
-    const NARRATIVE_REVIEW_SECTIONS = [
-      'mechanisms of kidney diseases',         // JASN
-      'clinical nephrology insights',          // JASN
-      'innovator corner',                      // JASN
-      'designing clinical trials',             // JASN
-      'perspective',                           // JASN / CJASN
-      'review',                                // generic catch-all (also matches "Review")
-      'lifestyle medicine and kidney health',  // CJASN (Copper 2026-05-02)
-      'kidney health watch',                   // CJASN (Copper 2026-05-02)
+    // Section blacklist — Copper directive 2026-05-02 (CJASN-led, applied to all
+    // LWW journals for consistency). Subscribed JASN/CJASN articles in any
+    // non-blacklisted section are auto-flagged for download. The blacklist
+    // excludes high-volume non-narrative content that the user does not
+    // routinely batch-download. Substring match (case-insensitive) against the
+    // section heading text. The popup UI still allows manual checkbox override
+    // for blacklisted articles (no `disabled` attribute applied).
+    //
+    // Supersedes the v3.13.0 NARRATIVE_REVIEW_SECTIONS whitelist (8 entries) —
+    // blacklist is broader-default and matches Copper's actual reading workflow.
+    const EXCLUDED_SECTIONS = [
+      'clinical research',         // JASN / CJASN — original research articles, large volume
+      'letter to the editor',      // JASN / CJASN — correspondence
+      'about the cover',           // JASN / CJASN — cover image notes
     ];
 
     // Walk the article-list region in document order, tracking the most recent <h3>
@@ -671,9 +673,11 @@
       const authorsEl = el.querySelector('.js-few-authors .authors, .authors');
       const author = authorsEl ? authorsEl.textContent.trim().replace(/\s+/g, ' ').replace(/<[^>]+>/g, '') : '';
 
-      // Narrative-review whitelist match (case-insensitive substring).
+      // Blacklist match (case-insensitive substring): hasPdf=false for excluded
+      // sections, hasPdf=true for everything else. UI still permits manual
+      // override (the checkbox is no longer disabled in v3.15.0).
       const sectionLc = currentSection.toLowerCase();
-      const isNarrativeReview = NARRATIVE_REVIEW_SECTIONS.some(s => sectionLc.includes(s));
+      const isExcluded = EXCLUDED_SECTIONS.some(s => sectionLc.includes(s));
 
       // Best-guess PDF URL — LWW articles commonly accept ?Pdf=Yes to redirect to
       // the actual signed PDF endpoint. Verify on first download; if it fails the
@@ -690,7 +694,7 @@
         author,
         typeCode: '',
         typeName: currentSection,
-        hasPdf: isNarrativeReview,    // STRICT: only narrative-review whitelist auto-downloads (subscribed access; Copper 2026-05-02).
+        hasPdf: !isExcluded,          // BLACKLIST: hasPdf=false only for Clinical Research / Letter to the Editor / About the Cover; everything else default-on (Copper 2026-05-02).
         isOA: false,                  // LWW TOC has no OA flag; subscription default.
         journal: journalName,
       });
