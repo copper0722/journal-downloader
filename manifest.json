@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Journal Downloader",
   "description": "Export journal TOC metadata and batch-download only explicitly open-access/free PDFs. Non-OA and subscription items are metadata-only.",
-  "version": "3.13.1",
+  "version": "3.14.0",
   "permissions": ["downloads", "activeTab", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "action": {

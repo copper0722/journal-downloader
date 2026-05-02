@@ -378,10 +378,21 @@ async function startDownload() {
     }
 
     try {
-      await downloadFile(article.pdfUrl, filename);
+      let downloadUrl = article.pdfUrl;
+      if (isLWWArticle(article)) {
+        const resolved = await resolveLWWPDFUrl(article.fullUrl || article.pdfUrl);
+        if (resolved) {
+          console.log('[LWW resolver] resolved', article.fullUrl, '→', resolved);
+          downloadUrl = resolved;
+        } else {
+          console.warn('[LWW resolver] no candidate matched, falling back to', article.pdfUrl);
+        }
+      }
+      await downloadFile(downloadUrl, filename);
       statusSpan.innerHTML = ' <span class="done">&#10003;</span>';
     } catch (e) {
       statusSpan.innerHTML = ' <span class="fail">&#10007;</span>';
+      console.error('[downloadFile] error', e, 'url=', article.pdfUrl);
     }
 
     // NEJM supplements
@@ -603,11 +614,123 @@ ${totalArticles} articles · ${oaCount} open access / free
   );
 }
 
+// ── LWW (Wolters Kluwer) PDF URL resolver (v3.14.0) ──
+// LWW articles do not expose a stable PDF URL at TOC level. The TOC parser
+// constructs `fullUrl + ?Pdf=Yes` as a best-guess, but many LWW deployments
+// serve an HTML interstitial at that URL — Chrome saves the response with a
+// .html extension because Content-Type is text/html. The reliable path is a
+// 2-step resolver: fetch the article fulltext page (with subscriber cookies),
+// then extract the real download URL (typically a signed CDN link on
+// download.lww.com or cdn-links.lww.com). Falls back to the ?Pdf=Yes
+// best-guess when no candidate matches.
+
+function isLWWArticle(article) {
+  if (!article) return false;
+  if (article.journal === 'jasn' || article.journal === 'cjasn') return true;
+  if (article.fullUrl && article.fullUrl.includes('journals.lww.com')) return true;
+  if (article.pdfUrl && article.pdfUrl.includes('journals.lww.com')) return true;
+  return false;
+}
+
+async function resolveLWWPDFUrl(articleFullUrl) {
+  if (!articleFullUrl) return null;
+  // Strip ?Pdf=Yes / &Pdf=Yes; we want the article HTML page, not the redirect.
+  const cleanUrl = articleFullUrl
+    .replace(/[?&]Pdf=Yes\b/i, '')
+    .replace(/\?$/, '')
+    .replace(/&$/, '');
+  try {
+    const res = await fetch(cleanUrl, { credentials: 'include', redirect: 'follow' });
+    if (!res.ok) {
+      console.warn('[LWW resolver] fetch failed', cleanUrl, res.status);
+      return null;
+    }
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    // DOM candidate selectors (priority order). Non-exhaustive — extend after
+    // observing real LWW article HTML structure across journals.
+    const domCandidates = [
+      'a[href*="download.lww.com"][href$=".pdf"]',
+      'a[href*="cdn-links.lww.com"][href$=".pdf"]',
+      'a[href*="wolterskluwer_vitalstream_com"][href$=".pdf"]',
+      'a[href*="PermaLink/"][href$=".pdf"]',
+      'a[href*="permalink/"][href$=".pdf"]',
+      'a[data-pdf-url]',
+      'link[rel="alternate"][type="application/pdf"][href]',
+      'a[href*=".pdf"][title*="PDF" i]',
+      'a[href*=".pdf"][aria-label*="PDF" i]',
+    ];
+    for (const sel of domCandidates) {
+      const el = doc.querySelector(sel);
+      if (!el) continue;
+      const href = el.getAttribute('data-pdf-url') || el.getAttribute('href');
+      if (!href) continue;
+      const abs = new URL(href, cleanUrl).href;
+      console.log('[LWW resolver] DOM candidate hit', sel, '→', abs);
+      return abs;
+    }
+
+    // Regex fallbacks on raw HTML (covers JS-templated / escaped strings that
+    // the DOMParser path may miss because they live inside <script> blocks
+    // or escaped JSON-config blobs).
+    const regexCandidates = [
+      /https?:\/\/download\.lww\.com\/[^"'\s<>]+\.pdf/i,
+      /https?:\/\/cdn-links\.lww\.com\/[^"'\s<>]+\.pdf/i,
+      /["']([^"']+wolterskluwer_vitalstream_com[^"']+\.pdf)["']/i,
+      /EJ\.Tools\.downloadPDF\s*\(\s*["']([^"']+)["']/i,
+      /data-pdf-url\s*=\s*["']([^"']+)["']/i,
+    ];
+    for (const re of regexCandidates) {
+      const m = html.match(re);
+      if (!m) continue;
+      const url = m[1] || m[0];
+      const abs = new URL(url, cleanUrl).href;
+      console.log('[LWW resolver] regex candidate hit', re, '→', abs);
+      return abs;
+    }
+
+    console.warn('[LWW resolver] no candidate matched for', cleanUrl,
+      '— first 500 chars of HTML:', html.substring(0, 500));
+    return null;
+  } catch (e) {
+    console.error('[LWW resolver] error', e, cleanUrl);
+    return null;
+  }
+}
+
 function downloadFile(url, filename) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download({ url, filename, conflictAction: 'uniquify' }, id => {
-      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-      else resolve(id);
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      // Mime sanity check: warn (don't block) when server returns text/html
+      // instead of a PDF — typical of paywall/interstitial responses. Helps
+      // surface the LWW best-guess fallback failure mode in console.
+      const onChanged = (delta) => {
+        if (delta.id !== id) return;
+        if (delta.state && delta.state.current === 'complete') {
+          chrome.downloads.search({ id }, items => {
+            const it = items && items[0];
+            if (it && it.mime
+                && it.mime !== 'application/pdf'
+                && it.mime !== 'binary/octet-stream'
+                && it.mime !== 'application/octet-stream') {
+              console.warn('[downloadFile] non-PDF mime', it.mime,
+                'url=', it.url, 'filename=', it.filename,
+                '(check [LWW resolver] log above for resolver state)');
+            }
+          });
+          chrome.downloads.onChanged.removeListener(onChanged);
+          resolve(id);
+        } else if (delta.state && delta.state.current === 'interrupted') {
+          chrome.downloads.onChanged.removeListener(onChanged);
+          reject(new Error('download interrupted: ' + ((delta.error && delta.error.current) || 'unknown')));
+        }
+      };
+      chrome.downloads.onChanged.addListener(onChanged);
     });
   });
 }
