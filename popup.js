@@ -18,15 +18,16 @@ const JOURNAL_DEFAULTS = {
   lancet:       { label: 'Lancet',        cadence: 'weekly',   day: 5, color: '#e6001c', homepage: 'https://www.thelancet.com/journals/lancet/issues' },
   bmj:          { label: 'BMJ',           cadence: 'weekly',   day: 5, color: '#2a6ebb', homepage: 'https://www.bmj.com/thisweek' },
   aim:          { label: 'AIM',           cadence: 'biweekly', day: 3, color: '#005e39', homepage: 'https://www.acpjournals.org/toc/aim/current' },
+  jasn:         { label: 'JASN',          cadence: 'monthly',  dom: 1, color: '#1f3864', homepage: 'https://journals.lww.com/jasn/pages/currenttoc.aspx' },
+  cjasn:        { label: 'CJASN',         cadence: 'monthly',  dom: 1, color: '#1f3864', homepage: 'https://journals.lww.com/cjasn/pages/currenttoc.aspx' },
 };
 
 const CADENCE_DAYS = { weekly: 7, biweekly: 14, monthly: 30, quarterly: 91 };
 
-// Journal keys that were once seeded in JOURNAL_DEFAULTS but have been removed
-// (v3.19 dropped jasn/cjasn — LWW PDF download not feasible from extension).
-// Stored entries with these keys are pruned on every popup load so the
-// dashboard does not show dead cards.
-const REMOVED_JOURNAL_KEYS = ['jasn', 'cjasn'];
+// Journal keys that were once seeded in JOURNAL_DEFAULTS but have been removed.
+// (v3.19 dropped jasn/cjasn; v3.20 restored both via the text+image extraction
+// path. This array stays empty unless another journal is later retired.)
+const REMOVED_JOURNAL_KEYS = [];
 
 function loadJournals() {
   return new Promise(resolve => {
@@ -92,12 +93,20 @@ function extractIssueFromUrl(url) {
 }
 
 // Map content.js detectMode() output ('nejm-toc', 'nature-toc', ...) → journal key.
+// For multi-journal platforms (LWW), the journal slug is read from the URL path.
 function modeToJournalKey(mode, url) {
   if (!mode) return null;
   const base = mode.split('-')[0];
   // detectMode never says 'nejmevidence'; evidence.nejm.org currently isn't matched in content.js.
-  // Built-in mapping covers the 7 detected single-journal modes.
   if (['nejm', 'nature', 'science', 'lancet', 'bmj', 'aim', 'jama'].includes(base)) return base;
+  // LWW (Wolters Kluwer) is multi-journal; derive slug from URL path.
+  if (base === 'lww' && url) {
+    const m = url.match(/journals\.lww\.com\/([a-z]+)\//i);
+    if (m) {
+      const slug = m[1].toLowerCase();
+      if (['jasn', 'cjasn'].includes(slug)) return slug;
+    }
+  }
   return null;
 }
 
@@ -222,6 +231,7 @@ function modeBase() {
   if (pageMode.startsWith('bmj')) return 'bmj';
   if (pageMode.startsWith('aim')) return 'aim';
   if (pageMode.startsWith('jama')) return 'jama';
+  if (pageMode.startsWith('lww')) return 'lww';
   return 'generic';
 }
 
@@ -306,6 +316,14 @@ function renderList() {
       // grabbing produces paywall HTML). hasPdf=isOA + checkbox disabled for non-OA.
       badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
+    } else if (base === 'lww') {
+      // v3.20.0: LWW articles use text+image extraction path (PDF stream gated
+      // server-side; v3.13–v3.18 attempts all returned text/html). hasPdf is
+      // set in content.js by section blacklist (Clinical Research / Letter to
+      // the Editor / About the Cover off; everything else default-on); user
+      // can manually override via checkbox.
+      badges = a.hasPdf ? '<span class="badge oa">Sub. text+img</span>' : '<span class="badge closed">Excluded (manual OK)</span>';
+      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
     }
@@ -388,8 +406,15 @@ async function startDownload() {
     }
 
     try {
-      await downloadFile(article.pdfUrl, filename);
-      statusSpan.innerHTML = ' <span class="done">&#10003;</span>';
+      if (article.kind === 'lww-text-image') {
+        // v3.20.0: LWW articles — extract body markdown + figure binaries via
+        // content-script same-origin fetch. Bundle saved as
+        // ~/Downloads/journal-downloader/{citationKey}/raw.md + figures/*.
+        await extractAndSaveLWWBundle(article, statusSpan);
+      } else {
+        await downloadFile(article.pdfUrl, filename);
+        statusSpan.innerHTML = ' <span class="done">&#10003;</span>';
+      }
     } catch (e) {
       statusSpan.innerHTML = ' <span class="fail">&#10007;</span>';
       console.error('[downloadFile] error', e, 'url=', article.pdfUrl);
@@ -509,7 +534,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : base === 'lww' ? ((articles[0] && articles[0].journal) || 'LWW') : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -607,13 +632,121 @@ ${totalArticles} articles · ${oaCount} open access / free
   );
 }
 
-// LWW (Wolters Kluwer / journals.lww.com) PDF resolver was attempted in
-// v3.13–v3.18 and removed in v3.19 (2026-05-02). Server-side gating + client-
-// side handler with user-gesture-bound token + internal session state defeats
-// pure-extension download attempts. JASN, CJASN, KI Reports etc. are no longer
-// recognised as managed journals — pages on journals.lww.com fall through to
-// generic PDF-link enumeration. Manual download via the page's PDF icon
-// remains the supported path. Revisit only with a stable POST/header recipe.
+// ── LWW text+image extraction bundle (v3.20.0) ──
+// LWW PDF stream is server-gated and not feasible from extension context
+// (v3.13–v3.18 attempts all returned text/html). v3.20 takes a different path:
+// the article fulltext page itself IS rendered for subscribers in HTML form, so
+// the content-script can fetch it (same-origin → cookie travels), parse the
+// body to markdown, and download each figure binary as a separate file. The
+// resulting bundle ~/Downloads/journal-downloader/{citationKey}/{raw.md +
+// figures/*} is then user-moved into Dropbox/_inbox where the existing wikify
+// pipeline picks it up.
+
+async function extractAndSaveLWWBundle(article, statusSpan) {
+  // Step 1: ask content-script (running on the active LWW tab, same-origin) to
+  // fetch + parse the fulltext page.
+  const result = await new Promise(resolve => {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      if (!tabs[0]) return resolve({ ok: false, error: 'no active tab' });
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'extractLWWArticle', url: article.fullUrl }, response => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(response || { ok: false, error: 'no response' });
+        }
+      });
+    });
+  });
+  if (!result.ok) {
+    console.error('[LWW extract] failed', article.fullUrl, result.error || `status=${result.status}`);
+    statusSpan.innerHTML = ' <span class="fail">&#10007;</span>';
+    return;
+  }
+  console.log('[LWW extract] got bundle', article.fullUrl, `body=${(result.bodyMd || '').length}c`, `images=${result.images.length}`);
+
+  // citationKey = {Journal}_{accession_short}_{slug}.
+  const journalKey = (article.journal || 'LWW').toUpperCase();
+  const accShort = article.accession ? article.accession.replace(/[^0-9]/g, '').slice(-12) : article.articleId;
+  const slug = sanitize((result.title || article.title || '').substring(0, 60));
+  const citationKey = `${journalKey}_${accShort}_${slug}`.replace(/_+/g, '_').replace(/_$/, '');
+  const subdir = `journal-downloader/${citationKey}`;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Build raw.md
+  const fmLines = [
+    '---',
+    'type: raw',
+    `citationKey: ${citationKey}`,
+    `uid: doi:${result.doi || article.doi || ''}`,
+    'source_type: journal_article',
+    `journal: ${article.journal || ''}`,
+    `title: ${JSON.stringify(result.title || article.title || '')}`,
+    `authors: ${JSON.stringify(result.authors || article.author || '')}`,
+    `doi: ${result.doi || article.doi || ''}`,
+    `accession_number: ${article.accession || ''}`,
+    `fulltext_url: ${result.sourceUrl || article.fullUrl}`,
+    `section: ${JSON.stringify(article.typeName || '')}`,
+    `captured_date: ${today}`,
+    'extracted_via: journal-downloader-v3.20.0-content-script',
+    'fidelity_notes: |',
+    '  HTML body + figure binaries extracted via Chrome ext content-script same-',
+    '  origin fetch (subscriber session). LWW PDF stream is server-gated and not',
+    '  feasible from ext; this is the substitute path. Image vision-description',
+    '  + downstream wikify happens in the standard pipeline.',
+    `figure_count: ${result.images.length}`,
+    'sidecar: figures/',
+    '---',
+    '',
+    `# ${result.title || article.title || ''}`,
+    '',
+    result.authors ? `**Authors**: ${result.authors}\n` : '',
+    result.doi ? `**DOI**: <https://doi.org/${result.doi}>\n` : '',
+    article.typeName ? `**Section**: ${article.typeName}\n` : '',
+    '',
+    '## Abstract',
+    '',
+    result.abstract || '(no abstract extracted)',
+    '',
+    '---',
+    '',
+    result.bodyMd || '(body extraction empty)',
+    '',
+    '## Figure URLs (raw)',
+    '',
+  ];
+  result.images.forEach((img, i) => {
+    fmLines.push(`- [${i + 1}] ${img.url}${img.caption ? ' — ' + img.caption.substring(0, 200) : ''}`);
+  });
+  const rawMd = fmLines.join('\n');
+
+  // Save raw.md
+  const rawBlob = new Blob([rawMd], { type: 'text/markdown' });
+  const rawUrl = URL.createObjectURL(rawBlob);
+  try {
+    await downloadFile(rawUrl, `${subdir}/raw.md`);
+  } finally {
+    URL.revokeObjectURL(rawUrl);
+  }
+
+  // Save figure binaries (best-effort; individual failures don't abort the bundle).
+  let figOk = 0, figFail = 0;
+  for (let i = 0; i < result.images.length; i++) {
+    const img = result.images[i];
+    const extM = img.url.match(/\.(jpe?g|png|gif|webp|svg|tiff?)(\?|#|$)/i);
+    const ext = extM ? extM[1].toLowerCase() : 'jpg';
+    const capSlug = img.caption ? '_' + sanitize(img.caption.substring(0, 30)) : '';
+    const name = String(i + 1).padStart(2, '0') + capSlug + '.' + ext;
+    try {
+      await downloadFile(img.url, `${subdir}/figures/${name}`);
+      figOk++;
+    } catch (e) {
+      console.warn('[LWW extract] figure download failed', img.url, e);
+      figFail++;
+    }
+  }
+  console.log(`[LWW extract] bundle saved: ${subdir}/  (raw.md + ${figOk}/${result.images.length} figures, ${figFail} failed)`);
+  statusSpan.innerHTML = ` <span class="done">&#10003;</span> <span style="font-size:10px;color:#888">${figOk}f</span>`;
+}
 
 function downloadFile(url, filename) {
   return new Promise((resolve, reject) => {

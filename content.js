@@ -18,14 +18,13 @@
     if (host.includes('acpjournals.org') && path.match(/^\/doi\/10\.7326\//)) return 'aim-article';
     if (host.includes('jamanetwork.com') && path.match(/\/currentissue|\/issue\//)) return 'jama-toc';
     if (host.includes('jamanetwork.com') && path.match(/\/fullarticle\/|\/article-abstract\//)) return 'jama-article';
-    // LWW (Wolters Kluwer / journals.lww.com — JASN, CJASN, KI Reports, etc.) was
-    // supported in v3.13–v3.18 but removed in v3.19 (2026-05-02). Root cause: LWW
-    // server-side gates PDF binary streaming behind a client-side handler with a
-    // user-gesture-bound token + internal session state that an extension cannot
-    // reproduce from outside the page. Pure-ext download always returned text/html
-    // (the article fulltext page) regardless of cookie / fetch context / candidate
-    // selector. Verified end-to-end via osascript page-context fetch + CDP trusted
-    // mouse click. Revisit only if a stable POST/header recipe is later observed.
+    // LWW (Wolters Kluwer / journals.lww.com — JASN, CJASN, KI Reports, etc.).
+    // PDF download is server-gated and not feasible from extension context (v3.13
+    // –v3.18 attempts all returned text/html). v3.20 restores LWW support but on
+    // a different path: extract article body text + figure binaries via content-
+    // script same-origin fetch and write a raw.md bundle, bypassing the PDF stream.
+    if (host.includes('journals.lww.com') && path.match(/\/pages\/currenttoc\.aspx|\/toc\//i)) return 'lww-toc';
+    if (host.includes('journals.lww.com') && path.includes('/fulltext/')) return 'lww-article';
     return 'generic';
   }
 
@@ -582,6 +581,81 @@
   }
 
 
+  // ── LWW (Wolters Kluwer) TOC parser — v3.20 text+image extraction path ──
+  // Article wrapper: <article>; section heading: nearest preceding
+  // <h3 aria-expanded="false">; title link: header h4 a; DOI from data-config
+  // JSON; accession number from <button data-config> "an=" query param.
+  // pdfUrl is set to the article fulltext URL (not a PDF endpoint) — popup
+  // download flow recognises kind='lww-text-image' and invokes
+  // extractLWWArticle message handler instead of chrome.downloads.download.
+  function parseLWW_TOC() {
+    const EXCLUDED_SECTIONS = [
+      'clinical research', 'letter to the editor', 'about the cover',
+    ];
+    const root = document.querySelector('.article-list') || document.body;
+    const walked = root.querySelectorAll('h3, article');
+    const articles = [];
+    const seen = new Set();
+    const slugMatch = location.pathname.match(/^\/([a-z]+)\//i);
+    const journalSlug = slugMatch ? slugMatch[1].toLowerCase() : 'lww';
+    const journalName = journalSlug.toUpperCase();
+    let currentSection = '';
+    walked.forEach(el => {
+      if (el.tagName === 'H3') {
+        if (el.hasAttribute('aria-expanded') || el.closest('section.content-box')) {
+          currentSection = (el.textContent || '').trim().replace(/\s+/g, ' ');
+        }
+        return;
+      }
+      const titleA = el.querySelector('header h4 a, h4 > a[title]');
+      if (!titleA) return;
+      const title = (titleA.getAttribute('title') || titleA.textContent || '').trim().replace(/\s+/g, ' ');
+      if (!title) return;
+      const fullHref = titleA.getAttribute('href') || '';
+      const fullUrl = fullHref.startsWith('http') ? fullHref : `https://journals.lww.com${fullHref}`;
+      let doi = '';
+      const cfgEls = el.querySelectorAll('[data-config]');
+      for (const cfgEl of cfgEls) {
+        const cfg = cfgEl.getAttribute('data-config') || '';
+        const m = cfg.match(/(10\.\d{4,5}\/[A-Za-z][\w./-]+)/);
+        if (m) { doi = m[1].toLowerCase().replace(/[.,;]+$/, ''); break; }
+      }
+      const articleId = doi
+        ? doi.replace(/^10\.\d{4,5}\//, '').replace(/[^a-z0-9]/g, '_')
+        : (fullUrl.split('/').pop() || '').replace(/\.aspx$/, '');
+      const dedupKey = doi || fullUrl;
+      if (seen.has(dedupKey)) return;
+      seen.add(dedupKey);
+      const authorsEl = el.querySelector('.js-few-authors .authors, .authors');
+      const author = authorsEl ? authorsEl.textContent.trim().replace(/\s+/g, ' ').replace(/<[^>]+>/g, '') : '';
+      const sectionLc = currentSection.toLowerCase();
+      const isExcluded = EXCLUDED_SECTIONS.some(s => sectionLc.includes(s));
+      // Accession number from PDF download button's data-config "an=" query.
+      let accession = '';
+      const dlBtn = el.querySelector('button.user-menu__link--download[data-config]')
+                 || (el.querySelector('i.wk-icon-file-pdf') || {}).closest
+                  && el.querySelector('i.wk-icon-file-pdf').closest('[data-config]');
+      if (dlBtn) {
+        const cfg = dlBtn.getAttribute('data-config') || '';
+        const am = cfg.match(/[?&]an=([0-9-]+)/);
+        if (am) accession = am[1];
+      }
+      articles.push({
+        doi, articleId, title, abstract: '',
+        pdfUrl: fullUrl,             // for LWW: the fulltext URL; popup uses extractLWWArticle path
+        fullUrl,
+        author, typeCode: '', typeName: currentSection,
+        hasPdf: !isExcluded,         // BLACKLIST: Clinical Research / Letter / About the Cover off by default
+        isOA: false,                 // LWW TOC has no OA flag
+        journal: journalName,
+        accession,
+        kind: 'lww-text-image',      // signal: popup uses content-script extract instead of chrome.downloads.download
+      });
+    });
+    return articles;
+  }
+
+
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
   const ABSTRACT_SELECTORS = {
@@ -761,6 +835,7 @@
       else if (mode === 'bmj-toc') articles = parseBMJ_TOC();
       else if (mode === 'aim-toc') articles = parseAIM_TOC();
       else if (mode === 'jama-toc') articles = parseJAMA_TOC();
+      else if (mode === 'lww-toc') articles = parseLWW_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {
@@ -793,6 +868,116 @@
         })
         .catch(() => sendResponse({ supplements: [] }));
       return true;
+    } else if (request.action === 'extractLWWArticle') {
+      // v3.20.0: same-origin fetch of LWW article fulltext page (subscriber
+      // session cookie travels automatically), then extract title / authors /
+      // doi / abstract / body markdown / figure URLs. Returned bundle goes to
+      // popup which writes raw.md + downloads each figure binary as a separate
+      // chrome.downloads.download call.
+      (async () => {
+        try {
+          const res = await fetch(request.url, { credentials: 'include', redirect: 'follow' });
+          if (!res.ok) {
+            sendResponse({ ok: false, status: res.status });
+            return;
+          }
+          const html = await res.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          sendResponse({ ok: true, ...extractLWWArticleBody(doc, request.url) });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e) });
+        }
+      })();
+      return true;
     }
   });
+
+  // ── LWW article fulltext extractor (v3.20.0) ──
+  function extractLWWArticleBody(doc, baseUrl) {
+    const titleEl = doc.querySelector('h1.article-title, h1[itemprop="headline"], .article-title h1, .article-title');
+    const title = titleEl ? titleEl.textContent.trim().replace(/\s+/g, ' ') : '';
+    const authorEl = doc.querySelector('.al-author-name, .authors-list, .authors, [itemprop="author"]');
+    const authors = authorEl ? authorEl.textContent.trim().replace(/\s+/g, ' ').replace(/\n/g, '; ') : '';
+    let doi = '';
+    const doiCandidates = [
+      doc.querySelector('meta[name="citation_doi"]'),
+      doc.querySelector('a[href*="doi.org/10."]'),
+    ].filter(Boolean);
+    for (const el of doiCandidates) {
+      const v = el.getAttribute('content') || el.getAttribute('href') || '';
+      const m = v.match(/(10\.\d{4,5}\/[A-Za-z][\w./-]+)/);
+      if (m) { doi = m[1].toLowerCase(); break; }
+    }
+    const absEl = doc.querySelector('section.abstract, .article-abstract, .abstract, [itemprop="description"]');
+    const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
+    const bodyContainer = doc.querySelector('.ejp-fulltext-content, .article-body, main[role="main"], main, article');
+    const bodyMd = bodyContainer ? simpleHtmlToMarkdown(bodyContainer) : '(article body container not found)';
+    const images = [];
+    if (bodyContainer) {
+      bodyContainer.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-large-image-url') || '';
+        if (!src || /^data:/.test(src)) return;
+        const abs = new URL(src, baseUrl).href;
+        const figEl = img.closest('figure');
+        const captionEl = figEl ? figEl.querySelector('figcaption') : null;
+        const caption = captionEl ? captionEl.textContent.trim().replace(/\s+/g, ' ') : '';
+        images.push({ url: abs, caption });
+      });
+    }
+    return { title, authors, doi, abstract, bodyMd, images, sourceUrl: baseUrl };
+  }
+
+  function simpleHtmlToMarkdown(rootEl) {
+    const clone = rootEl.cloneNode(true);
+    clone.querySelectorAll('script, style, nav, .references-extra, .article-tools, .lww-ejp-article-tools, .js-ejp-article-tools, [aria-hidden="true"]').forEach(e => e.remove());
+    let md = '';
+    function walk(node) {
+      if (node.nodeType === Node.TEXT_NODE) { md += node.textContent.replace(/\s+/g, ' '); return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = node.tagName.toLowerCase();
+      if (/^h[1-6]$/.test(tag)) {
+        const lv = parseInt(tag.charAt(1), 10);
+        md += '\n\n' + '#'.repeat(lv) + ' ' + node.textContent.trim().replace(/\s+/g, ' ') + '\n\n';
+        return;
+      }
+      if (tag === 'p') { md += '\n\n'; Array.from(node.childNodes).forEach(walk); md += '\n\n'; return; }
+      if (tag === 'br') { md += '\n'; return; }
+      if (tag === 'a') {
+        const href = node.getAttribute('href') || '';
+        const t = node.textContent.trim();
+        if (href && t) md += '[' + t + '](' + href + ')';
+        else md += t;
+        return;
+      }
+      if (tag === 'em' || tag === 'i') { md += '*' + node.textContent.trim() + '*'; return; }
+      if (tag === 'strong' || tag === 'b') { md += '**' + node.textContent.trim() + '**'; return; }
+      if (tag === 'figure') {
+        const img = node.querySelector('img');
+        const cap = node.querySelector('figcaption');
+        const src = img ? (img.getAttribute('src') || img.getAttribute('data-src') || '') : '';
+        md += '\n\n**[Figure]**';
+        if (src) md += ' `' + src.split('/').pop().split('?')[0] + '`';
+        if (cap) md += ' — ' + cap.textContent.trim().replace(/\s+/g, ' ');
+        md += '\n\n';
+        return;
+      }
+      if (tag === 'table') {
+        // Preserve raw HTML — downstream wikify can convert to markdown table later.
+        md += '\n\n<!-- table -->\n' + node.outerHTML + '\n<!-- /table -->\n\n';
+        return;
+      }
+      if (tag === 'ul' || tag === 'ol') {
+        Array.from(node.querySelectorAll(':scope > li')).forEach((li, i) => {
+          md += '\n' + (tag === 'ol' ? `${i + 1}.` : '-') + ' ';
+          Array.from(li.childNodes).forEach(walk);
+        });
+        md += '\n\n';
+        return;
+      }
+      if (tag === 'li') { Array.from(node.childNodes).forEach(walk); return; }
+      Array.from(node.childNodes).forEach(walk);
+    }
+    walk(clone);
+    return md.replace(/\n{3,}/g, '\n\n').trim();
+  }
 })();
