@@ -18,21 +18,35 @@ const JOURNAL_DEFAULTS = {
   lancet:       { label: 'Lancet',        cadence: 'weekly',   day: 5, color: '#e6001c', homepage: 'https://www.thelancet.com/journals/lancet/issues' },
   bmj:          { label: 'BMJ',           cadence: 'weekly',   day: 5, color: '#2a6ebb', homepage: 'https://www.bmj.com/thisweek' },
   aim:          { label: 'AIM',           cadence: 'biweekly', day: 3, color: '#005e39', homepage: 'https://www.acpjournals.org/toc/aim/current' },
-  jasn:         { label: 'JASN',          cadence: 'monthly',  dom: 1, color: '#005e39', homepage: 'https://journals.lww.com/jasn/pages/currenttoc.aspx' },
-  cjasn:        { label: 'CJASN',         cadence: 'monthly',  dom: 1, color: '#005e39', homepage: 'https://journals.lww.com/cjasn/pages/currenttoc.aspx' },
 };
 
 const CADENCE_DAYS = { weekly: 7, biweekly: 14, monthly: 30, quarterly: 91 };
 
+// Journal keys that were once seeded in JOURNAL_DEFAULTS but have been removed
+// (v3.19 dropped jasn/cjasn — LWW PDF download not feasible from extension).
+// Stored entries with these keys are pruned on every popup load so the
+// dashboard does not show dead cards.
+const REMOVED_JOURNAL_KEYS = ['jasn', 'cjasn'];
+
 function loadJournals() {
   return new Promise(resolve => {
     chrome.storage.local.get('journals', data => {
+      let journals;
       if (data.journals && Object.keys(data.journals).length > 0) {
         // Merge defaults: any new built-in journal that storage doesn't have yet, add it.
-        const merged = { ...JSON.parse(JSON.stringify(JOURNAL_DEFAULTS)), ...data.journals };
-        resolve(merged);
+        journals = { ...JSON.parse(JSON.stringify(JOURNAL_DEFAULTS)), ...data.journals };
       } else {
-        resolve(JSON.parse(JSON.stringify(JOURNAL_DEFAULTS)));
+        journals = JSON.parse(JSON.stringify(JOURNAL_DEFAULTS));
+      }
+      // Prune removed journal keys.
+      let pruned = false;
+      for (const k of REMOVED_JOURNAL_KEYS) {
+        if (k in journals) { delete journals[k]; pruned = true; }
+      }
+      if (pruned) {
+        chrome.storage.local.set({ journals }, () => resolve(journals));
+      } else {
+        resolve(journals);
       }
     });
   });
@@ -78,23 +92,12 @@ function extractIssueFromUrl(url) {
 }
 
 // Map content.js detectMode() output ('nejm-toc', 'nature-toc', ...) → journal key.
-// For multi-journal platforms (LWW), the journal slug is read from the URL path.
 function modeToJournalKey(mode, url) {
   if (!mode) return null;
   const base = mode.split('-')[0];
   // detectMode never says 'nejmevidence'; evidence.nejm.org currently isn't matched in content.js.
   // Built-in mapping covers the 7 detected single-journal modes.
   if (['nejm', 'nature', 'science', 'lancet', 'bmj', 'aim', 'jama'].includes(base)) return base;
-  // LWW (Wolters Kluwer) is a multi-journal platform; derive slug from URL path.
-  // Built-in JOURNAL_DEFAULTS covers jasn + cjasn; other LWW journals (KI, KI Reports, ...)
-  // require the user to add via the dashboard "+ Add monthly journal" modal first.
-  if (base === 'lww' && url) {
-    const m = url.match(/journals\.lww\.com\/([a-z]+)\//i);
-    if (m) {
-      const slug = m[1].toLowerCase();
-      if (['jasn', 'cjasn'].includes(slug)) return slug;
-    }
-  }
   return null;
 }
 
@@ -219,7 +222,6 @@ function modeBase() {
   if (pageMode.startsWith('bmj')) return 'bmj';
   if (pageMode.startsWith('aim')) return 'aim';
   if (pageMode.startsWith('jama')) return 'jama';
-  if (pageMode.startsWith('lww')) return 'lww';
   return 'generic';
 }
 
@@ -277,8 +279,8 @@ function renderList() {
 
     const checked = a.hasPdf ? 'checked' : '';
     // No `disabled` attribute — Copper directive 2026-05-02: user must always
-    // be able to manually tick a non-default entry (e.g. a Clinical Research
-    // article in CJASN) and download it.
+    // be able to manually tick a non-default entry (e.g. an Editorial in JAMA)
+    // and download it.
 
     let badges = '';
     if (base === 'nature') {
@@ -303,15 +305,6 @@ function renderList() {
       // (non-OA articles' PDFs are server-gated via /Content/CheckPdfAccess, generic
       // grabbing produces paywall HTML). hasPdf=isOA + checkbox disabled for non-OA.
       badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
-      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
-    } else if (base === 'lww') {
-      // LWW (JASN/CJASN/...) — TOC has no OA flag; whole platform is subscription-based.
-      // hasPdf is set in content.js parser by section BLACKLIST (Copper directive
-      // 2026-05-02, CJASN-led, generalised to LWW): hasPdf=false for
-      // Clinical Research / Letter to the Editor / About the Cover; hasPdf=true
-      // for everything else. Manual override always available (checkbox never
-      // disabled in v3.15.0+).
-      badges = a.hasPdf ? '<span class="badge oa">Sub. + DL</span>' : '<span class="badge closed">Excluded (manual OK)</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
@@ -347,7 +340,7 @@ function renderList() {
     el.addEventListener('click', () => el.classList.toggle('expanded'));
   });
   // v3.15.0: download button tracks actual checkbox state (any check = enabled),
-  // so manual override of default-off entries (e.g. CJASN Clinical Research)
+  // so manual override of default-off entries (e.g. a paywalled BMJ News article)
   // re-enables the button.
   list.querySelectorAll('.articleCb').forEach(cb => {
     cb.addEventListener('change', updateDownloadButtonState);
@@ -395,25 +388,7 @@ async function startDownload() {
     }
 
     try {
-      let downloadUrl = article.pdfUrl;
-      if (isLWWArticle(article)) {
-        // v3.18 fast path: parseLWW_TOC already extracted the real downloadpdf.aspx
-        // URL from the article's <button data-config>. Use it directly — Chrome's
-        // download cookie jar carries the LWW session, no fetch resolver needed.
-        if (article.pdfUrl && /downloadpdf\.aspx/i.test(article.pdfUrl)) {
-          console.log('[LWW] using TOC-extracted PDF URL:', article.pdfUrl);
-        } else {
-          // Fallback: TOC didn't yield a real PDF URL → 2-step resolver (v3.17).
-          const resolved = await resolveLWWPDFUrl(article.fullUrl || article.pdfUrl);
-          if (resolved) {
-            console.log('[LWW resolver] resolved', article.fullUrl, '→', resolved);
-            downloadUrl = resolved;
-          } else {
-            console.warn('[LWW resolver] no candidate matched, falling back to', article.pdfUrl);
-          }
-        }
-      }
-      await downloadFile(downloadUrl, filename);
+      await downloadFile(article.pdfUrl, filename);
       statusSpan.innerHTML = ' <span class="done">&#10003;</span>';
     } catch (e) {
       statusSpan.innerHTML = ' <span class="fail">&#10007;</span>';
@@ -534,7 +509,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : base === 'lww' ? ((articles[0] && articles[0].journal) || 'LWW') : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -561,13 +536,6 @@ function saveToMarkdown() {
     const firstCit = document.querySelector('.article--citation .meta-citation');
     const ct = firstCit ? firstCit.textContent : '';
     const m = ct.match(/\d{4};(\d+)\((\d+)\)/);
-    if (m) issueTag = `_${m[1]}-${m[2]}`;
-  }
-  // LWW /pages/currenttoc.aspx → derive issue tag from first article's fullUrl
-  // path /jasn/fulltext/2026/05000/...aspx (year+issueDigit composite).
-  if (!issueTag && base === 'lww') {
-    const fU = articles[0] && articles[0].fullUrl ? articles[0].fullUrl : '';
-    const m = fU.match(/\/[a-z]+\/fulltext\/(\d{4})\/(\d+)\//i);
     if (m) issueTag = `_${m[1]}-${m[2]}`;
   }
 
@@ -639,165 +607,13 @@ ${totalArticles} articles · ${oaCount} open access / free
   );
 }
 
-// ── LWW (Wolters Kluwer) PDF URL resolver (v3.16.0) ──
-// LWW article fulltext pages expose the real PDF endpoint as a `data-pdf-url`
-// attribute on the article-tools <div> (class "js-ejp-article-tools"), pointing
-// to /{journal}/_layouts/15/oaks.journals/downloadpdf.aspx?an={accession_number}.
-// The accession number ("an=" query) is the article's NLM-style identifier and
-// is server-side authenticated against the user's subscriber cookie.
-//
-// The misleading `?Pdf=Yes&Ppt=Article|...` URL on the same page is the
-// PowerPoint-slides export, NOT a PDF download. The bare `?Pdf=Yes` URL the
-// v3.13.0 TOC parser constructed redirects to the article HTML page when no
-// `an=` parameter is present, which Chrome then saves with a .html extension.
-//
-// This 2-step resolver fetches the article fulltext page with subscriber
-// cookies (host_permissions <all_urls>), extracts data-pdf-url via DOM, falls
-// back to regex on raw HTML, and only as last resort returns null so the
-// caller falls back to the v3.13.0 ?Pdf=Yes best-guess (which still produces
-// a .html — but mime sanity check warns).
-//
-// Reference HTML inspected: Dropbox/_inbox/cjn_0000000892_*.html (Copper
-// 2026-05-02). Pattern verified against the National Prevalence Taiwan CKD
-// CJASN article that was successfully downloaded as PDF manually
-// (national_prevalence,_regional_distribution,_and.19.pdf).
-
-function isLWWArticle(article) {
-  if (!article) return false;
-  if (article.journal === 'jasn' || article.journal === 'cjasn') return true;
-  if (article.fullUrl && article.fullUrl.includes('journals.lww.com')) return true;
-  if (article.pdfUrl && article.pdfUrl.includes('journals.lww.com')) return true;
-  return false;
-}
-
-// Decode HTML entities such as &amp; -> & in URLs extracted from raw HTML
-// (DOMParser already decodes attribute values; regex paths see escaped form).
-function decodeHtmlEntities(s) {
-  if (!s) return s;
-  const t = document.createElement('textarea');
-  t.innerHTML = s;
-  return t.value;
-}
-
-async function resolveLWWPDFUrl(articleFullUrl) {
-  if (!articleFullUrl) return null;
-  // Strip ?Pdf=Yes / &Pdf=Yes; we want the article HTML page, not the redirect.
-  const cleanUrl = articleFullUrl
-    .replace(/[?&]Pdf=Yes\b/i, '')
-    .replace(/\?$/, '')
-    .replace(/&$/, '');
-
-  // v3.17.0: prefer content-script fetch (same-origin to journals.lww.com,
-  // subscriber cookies travel automatically). Popup-context fetch is
-  // cross-origin (extension origin → journals.lww.com); even with
-  // host_permissions <all_urls> + credentials:'include', third-party cookies
-  // may not travel reliably under MV3 + SameSite policies, so the server
-  // serves an anonymous-view HTML that lacks data-pdf-url.
-  let html = await fetchHtmlViaContentScript(cleanUrl);
-  let fetchedVia = 'content-script';
-  if (!html) {
-    fetchedVia = 'popup-fetch';
-    try {
-      const res = await fetch(cleanUrl, { credentials: 'include', redirect: 'follow' });
-      if (!res.ok) {
-        console.warn('[LWW resolver] popup fetch failed', cleanUrl, res.status);
-        return null;
-      }
-      html = await res.text();
-    } catch (e) {
-      console.error('[LWW resolver] popup fetch error', e, cleanUrl);
-      return null;
-    }
-  }
-  console.log('[LWW resolver] fetched via', fetchedVia, '→', cleanUrl, `(${html.length} chars)`);
-  return extractLWWPDFUrlFromHtml(html, cleanUrl);
-}
-
-function fetchHtmlViaContentScript(url) {
-  return new Promise(resolve => {
-    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-      if (!tabs[0]) return resolve(null);
-      chrome.tabs.sendMessage(tabs[0].id, { action: 'resolveLWWPDF', url }, response => {
-        if (chrome.runtime.lastError) {
-          console.warn('[LWW resolver] content-script unavailable:', chrome.runtime.lastError.message);
-          resolve(null);
-        } else if (!response || !response.ok) {
-          const reason = response ? (response.error || `status=${response.status}`) : 'no response';
-          console.warn('[LWW resolver] content-script fetch failed:', reason);
-          resolve(null);
-        } else {
-          resolve(response.html);
-        }
-      });
-    });
-  });
-}
-
-function extractLWWPDFUrlFromHtml(html, baseUrl) {
-  try {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    // DOM candidate selectors, priority order. Empirically the LWW PDF
-    // endpoint lives on the article-tools <div>'s data-pdf-url attribute; the
-    // earlier candidates target it most precisely, the rest are fallbacks.
-    const domCandidates = [
-      // Most precise: js-ejp-article-tools div with PDF enabled flag.
-      '[data-pdf-url][data-pdf-enabled="true"]',
-      // Broader: any element with data-pdf-url (may be div, button, or anchor).
-      '[data-pdf-url]',
-      // Direct PDF anchor (rare on current LWW UI but cheap to check).
-      'a[href*="downloadpdf.aspx"]',
-      'a[href*="/_layouts/15/oaks.journals/downloadpdf"]',
-      // Generic PDF-mime alternate link.
-      'link[rel="alternate"][type="application/pdf"][href]',
-      // Legacy LWW CDN patterns kept as defensive fallback for other journals.
-      'a[href*="download.lww.com"][href$=".pdf"]',
-      'a[href*="cdn-links.lww.com"][href$=".pdf"]',
-      'a[href*=".pdf"][title*="PDF" i]',
-      'a[href*=".pdf"][aria-label*="PDF" i]',
-    ];
-    for (const sel of domCandidates) {
-      const el = doc.querySelector(sel);
-      if (!el) continue;
-      const href = el.getAttribute('data-pdf-url') || el.getAttribute('href');
-      if (!href) continue;
-      const abs = new URL(href, baseUrl).href;
-      console.log('[LWW resolver] DOM candidate hit', sel, '→', abs);
-      return abs;
-    }
-
-    // Regex fallbacks on raw HTML (covers JS-templated / escaped strings the
-    // DOMParser path may miss because they live inside <script> blocks or
-    // escaped JSON-config blobs). All candidates run through decodeHtmlEntities
-    // so &amp; -> & before new URL().
-    const regexCandidates = [
-      // data-pdf-url attribute pointing to LWW downloadpdf.aspx (most precise).
-      /data-pdf-url\s*=\s*["']([^"']*downloadpdf\.aspx[^"']*)["']/i,
-      // Full LWW downloadpdf.aspx URL anywhere in the HTML (e.g. JSON config blobs).
-      /["'](https?:\/\/journals\.lww\.com\/[^"']+\/_layouts\/15\/oaks\.journals\/downloadpdf\.aspx[^"']*)["']/i,
-      // Legacy CDN patterns.
-      /https?:\/\/download\.lww\.com\/[^"'\s<>]+\.pdf/i,
-      /https?:\/\/cdn-links\.lww\.com\/[^"'\s<>]+\.pdf/i,
-      /["']([^"']+wolterskluwer_vitalstream_com[^"']+\.pdf)["']/i,
-      /EJ\.Tools\.downloadPDF\s*\(\s*["']([^"']+)["']/i,
-    ];
-    for (const re of regexCandidates) {
-      const m = html.match(re);
-      if (!m) continue;
-      const raw = m[1] || m[0];
-      const url = decodeHtmlEntities(raw);
-      const abs = new URL(url, baseUrl).href;
-      console.log('[LWW resolver] regex candidate hit', re, '→', abs);
-      return abs;
-    }
-
-    console.warn('[LWW resolver] no candidate matched for', baseUrl,
-      '— first 500 chars of HTML:', html.substring(0, 500));
-    return null;
-  } catch (e) {
-    console.error('[LWW resolver] error', e, cleanUrl);
-    return null;
-  }
-}
+// LWW (Wolters Kluwer / journals.lww.com) PDF resolver was attempted in
+// v3.13–v3.18 and removed in v3.19 (2026-05-02). Server-side gating + client-
+// side handler with user-gesture-bound token + internal session state defeats
+// pure-extension download attempts. JASN, CJASN, KI Reports etc. are no longer
+// recognised as managed journals — pages on journals.lww.com fall through to
+// generic PDF-link enumeration. Manual download via the page's PDF icon
+// remains the supported path. Revisit only with a stable POST/header recipe.
 
 function downloadFile(url, filename) {
   return new Promise((resolve, reject) => {
@@ -807,8 +623,7 @@ function downloadFile(url, filename) {
         return;
       }
       // Mime sanity check: warn (don't block) when server returns text/html
-      // instead of a PDF — typical of paywall/interstitial responses. Helps
-      // surface the LWW best-guess fallback failure mode in console.
+      // instead of a PDF — typical of paywall/interstitial responses.
       const onChanged = (delta) => {
         if (delta.id !== id) return;
         if (delta.state && delta.state.current === 'complete') {
@@ -819,8 +634,7 @@ function downloadFile(url, filename) {
                 && it.mime !== 'binary/octet-stream'
                 && it.mime !== 'application/octet-stream') {
               console.warn('[downloadFile] non-PDF mime', it.mime,
-                'url=', it.url, 'filename=', it.filename,
-                '(check [LWW resolver] log above for resolver state)');
+                'url=', it.url, 'filename=', it.filename);
             }
           });
           chrome.downloads.onChanged.removeListener(onChanged);

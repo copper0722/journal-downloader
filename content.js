@@ -18,10 +18,14 @@
     if (host.includes('acpjournals.org') && path.match(/^\/doi\/10\.7326\//)) return 'aim-article';
     if (host.includes('jamanetwork.com') && path.match(/\/currentissue|\/issue\//)) return 'jama-toc';
     if (host.includes('jamanetwork.com') && path.match(/\/fullarticle\/|\/article-abstract\//)) return 'jama-article';
-    // LWW (Wolters Kluwer) journals platform — JASN/CJASN/KI etc.
-    // currenttoc.aspx is a server redirect to the latest issue TOC; /toc/ also possible.
-    if (host.includes('journals.lww.com') && path.match(/\/pages\/currenttoc\.aspx|\/toc\//i)) return 'lww-toc';
-    if (host.includes('journals.lww.com') && path.includes('/fulltext/')) return 'lww-article';
+    // LWW (Wolters Kluwer / journals.lww.com — JASN, CJASN, KI Reports, etc.) was
+    // supported in v3.13–v3.18 but removed in v3.19 (2026-05-02). Root cause: LWW
+    // server-side gates PDF binary streaming behind a client-side handler with a
+    // user-gesture-bound token + internal session state that an extension cannot
+    // reproduce from outside the page. Pure-ext download always returned text/html
+    // (the article fulltext page) regardless of cookie / fetch context / candidate
+    // selector. Verified end-to-end via osascript page-context fetch + CDP trusted
+    // mouse click. Revisit only if a stable POST/header recipe is later observed.
     return 'generic';
   }
 
@@ -577,160 +581,6 @@
     return articles;
   }
 
-  // ── LWW (Wolters Kluwer) TOC parser ──
-  // DOM verified 2026-05-02 against journals.lww.com/jasn/pages/currenttoc.aspx
-  // (snapshot saved at Dropbox/_Inbox/jasn-toc-snap-2026-05-02.html). LWW platform
-  // is shared by JASN, CJASN, KI Reports, and most Wolters Kluwer journals.
-  //
-  // Article wrapper: HTML5 <article> element (one per article entry; 20 in JASN current).
-  // Section heading: nearest preceding <h3 aria-expanded="false"> inside <section class="content-box">.
-  //   Sections in JASN 2026-05: Editorial / Basic Research / Clinical Research /
-  //   Mechanisms of Kidney Diseases / Clinical Nephrology Insights / Innovator Corner /
-  //   Designing Clinical Trials / Perspective.
-  // Title + fullUrl: <header><h4><a title="..." href="...">.
-  // Authors: .js-few-authors .authors.
-  // DOI: extracted from any descendant element's data-config JSON containing
-  //   "Article|<journal>:<year>:<issue>:<id>|10.<prefix>/...|" — DOI prefix 10.1681 (JASN) /
-  //   10.2215 (CJASN); fallback to URL-derived articleId.
-  //
-  // OA flag: LWW TOC has NO open-access flag at the TOC level. The platform is
-  //   subscription-based by default. Per Copper directive 2026-05-02, JASN and CJASN
-  //   are subscribed: the parser flags hasPdf=true for narrative-review section
-  //   headings (Mechanisms of Kidney Diseases / Clinical Nephrology Insights /
-  //   Innovator Corner / Designing Clinical Trials / Perspective / Review) so they
-  //   are auto-checked for download in the popup. Other sections stay metadata-only.
-  //
-  // PDF endpoint: LWW PDFs require navigating the article fulltext page first;
-  //   pdfUrl is set to fullUrl + ?Pdf=Yes as a best-guess pattern (LWW often honors
-  //   this query string and 302-redirects to the actual PDF endpoint with token).
-  //   TODO: verify against article page download button; if pattern fails, replace
-  //   with a 2-step fetch (fetch fulltext page → extract download.lww.com signed URL).
-  function parseLWW_TOC() {
-    // Section blacklist — Copper directive 2026-05-02 (CJASN-led, applied to all
-    // LWW journals for consistency). Subscribed JASN/CJASN articles in any
-    // non-blacklisted section are auto-flagged for download. The blacklist
-    // excludes high-volume non-narrative content that the user does not
-    // routinely batch-download. Substring match (case-insensitive) against the
-    // section heading text. The popup UI still allows manual checkbox override
-    // for blacklisted articles (no `disabled` attribute applied).
-    //
-    // Supersedes the v3.13.0 NARRATIVE_REVIEW_SECTIONS whitelist (8 entries) —
-    // blacklist is broader-default and matches Copper's actual reading workflow.
-    const EXCLUDED_SECTIONS = [
-      'clinical research',         // JASN / CJASN — original research articles, large volume
-      'letter to the editor',      // JASN / CJASN — correspondence
-      'about the cover',           // JASN / CJASN — cover image notes
-    ];
-
-    // Walk the article-list region in document order, tracking the most recent <h3>
-    // section heading and emitting one record per <article>.
-    const root = document.querySelector('.article-list') || document.body;
-    const walked = root.querySelectorAll('h3, article');
-    const articles = [];
-    const seen = new Set();
-
-    // Journal slug from URL path (jasn / cjasn / ki / etc.).
-    const slugMatch = location.pathname.match(/^\/([a-z]+)\//i);
-    const journalSlug = slugMatch ? slugMatch[1].toLowerCase() : 'lww';
-    const journalName = journalSlug.toUpperCase();
-
-    let currentSection = '';
-    walked.forEach(el => {
-      if (el.tagName === 'H3') {
-        // Only treat <h3> with aria-expanded as a TOC section heading (skip in-article h3).
-        if (el.hasAttribute('aria-expanded') || el.closest('section.content-box')) {
-          currentSection = (el.textContent || '').trim().replace(/\s+/g, ' ');
-        }
-        return;
-      }
-
-      // <article>
-      const titleA = el.querySelector('header h4 a, h4 > a[title]');
-      if (!titleA) return;
-      const title = (titleA.getAttribute('title') || titleA.textContent || '').trim().replace(/\s+/g, ' ');
-      if (!title) return;
-      const fullHref = titleA.getAttribute('href') || '';
-      const fullUrl = fullHref.startsWith('http') ? fullHref : `https://journals.lww.com${fullHref}`;
-
-      // DOI: scan any descendant data-config JSON for a 10.<digits>/... DOI.
-      let doi = '';
-      const cfgEls = el.querySelectorAll('[data-config]');
-      for (const cfgEl of cfgEls) {
-        const cfg = cfgEl.getAttribute('data-config') || '';
-        const m = cfg.match(/(10\.\d{4,5}\/[A-Za-z][\w./-]+)/);
-        if (m) { doi = m[1].toLowerCase().replace(/[.,;]+$/, ''); break; }
-      }
-
-      // articleId: derived from DOI suffix or URL slug.
-      const articleId = doi
-        ? doi.replace(/^10\.\d{4,5}\//, '').replace(/[^a-z0-9]/g, '_')
-        : (fullUrl.split('/').pop() || '').replace(/\.aspx$/, '');
-
-      const dedupKey = doi || fullUrl;
-      if (seen.has(dedupKey)) return;
-      seen.add(dedupKey);
-
-      const authorsEl = el.querySelector('.js-few-authors .authors, .authors');
-      const author = authorsEl ? authorsEl.textContent.trim().replace(/\s+/g, ' ').replace(/<[^>]+>/g, '') : '';
-
-      // Blacklist match (case-insensitive substring): hasPdf=false for excluded
-      // sections, hasPdf=true for everything else. UI still permits manual
-      // override (the checkbox is no longer disabled in v3.15.0).
-      const sectionLc = currentSection.toLowerCase();
-      const isExcluded = EXCLUDED_SECTIONS.some(s => sectionLc.includes(s));
-
-      // PDF URL — extract from the article's PDF download button.
-      // LWW issue TOC pattern (Copper 2026-05-02 verified via osascript probe of
-      // hm4 Chrome Beta active CJASN tab): each article has a wk-icon-file-pdf
-      // <i> wrapped by <button class="user-menu__link--download" data-config='{
-      //   "eventDetail":{"url":"https://journals.lww.com/{journal}/_layouts/15/
-      //   oaks.journals/downloadpdf.aspx?trckng_src_pg=ArticleDisplayControl&an=
-      //   {accession_number}","gating":false},...}'>
-      // The data-config "url" is the real, accession-number-bound, subscriber-
-      // gated PDF endpoint. chrome.downloads.download uses Chrome's own cookie
-      // jar (not ext popup-context fetch), so the LWW session cookie travels
-      // automatically, and the server streams the PDF binary.
-      let pdfUrl = '';
-      const pdfBtn = el.querySelector('i.wk-icon-file-pdf');
-      if (pdfBtn) {
-        const btn = pdfBtn.closest('button[data-config], a[data-config], [data-config]');
-        if (btn) {
-          const cfg = btn.getAttribute('data-config');
-          try {
-            const parsed = JSON.parse(cfg);
-            const ev = parsed && (parsed.eventDetail || parsed.detail);
-            const url = ev && ev.url;
-            if (url) pdfUrl = new URL(url, location.href).href;
-          } catch (e) {
-            // JSON.parse fail; leave pdfUrl blank, fall back below.
-          }
-        }
-      }
-      // Fallback: if no data-config extraction succeeded, use the v3.13 best-
-      // guess `?Pdf=Yes` and let the v3.17 2-step resolver kick in at download
-      // time. v3.18 plan = the data-config path covers the canonical case;
-      // resolver-based fallback survives unmaintained / non-CJASN LWW UIs.
-      if (!pdfUrl) {
-        pdfUrl = fullUrl.includes('?') ? `${fullUrl}&Pdf=Yes` : `${fullUrl}?Pdf=Yes`;
-      }
-
-      articles.push({
-        doi,
-        articleId,
-        title,
-        abstract: '',                 // LWW TOC has no inline abstract preview.
-        pdfUrl,
-        fullUrl,
-        author,
-        typeCode: '',
-        typeName: currentSection,
-        hasPdf: !isExcluded,          // BLACKLIST: hasPdf=false only for Clinical Research / Letter to the Editor / About the Cover; everything else default-on (Copper 2026-05-02).
-        isOA: false,                  // LWW TOC has no OA flag; subscription default.
-        journal: journalName,
-      });
-    });
-    return articles;
-  }
 
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
@@ -911,7 +761,6 @@
       else if (mode === 'bmj-toc') articles = parseBMJ_TOC();
       else if (mode === 'aim-toc') articles = parseAIM_TOC();
       else if (mode === 'jama-toc') articles = parseJAMA_TOC();
-      else if (mode === 'lww-toc') articles = parseLWW_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {
@@ -943,24 +792,6 @@
           sendResponse({ supplements: parseNEJM_Supplements(doc) });
         })
         .catch(() => sendResponse({ supplements: [] }));
-      return true;
-    } else if (request.action === 'resolveLWWPDF') {
-      // v3.17.0: same-origin fetch from the LWW tab so subscriber cookies
-      // travel automatically. Popup-context fetch is cross-origin and may
-      // not send LWW session cookies under MV3 + SameSite policies.
-      (async () => {
-        try {
-          const res = await fetch(request.url, { credentials: 'include', redirect: 'follow' });
-          if (!res.ok) {
-            sendResponse({ ok: false, status: res.status });
-            return;
-          }
-          const html = await res.text();
-          sendResponse({ ok: true, html });
-        } catch (e) {
-          sendResponse({ ok: false, error: String(e) });
-        }
-      })();
       return true;
     }
   });
