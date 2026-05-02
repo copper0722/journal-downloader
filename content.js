@@ -915,13 +915,23 @@
     const images = [];
     if (bodyContainer) {
       bodyContainer.querySelectorAll('img').forEach(img => {
-        const src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-large-image-url') || '';
-        if (!src || /^data:/.test(src)) return;
+        // LWW lazy-load uses src="javascript:void(0);" placeholder + data-src
+        // for the real URL. data-src priority; fall back to src only if it
+        // looks like an http(s) URL.
+        let src = img.getAttribute('data-src')
+              || img.getAttribute('data-large-image-url')
+              || img.getAttribute('data-original')
+              || img.getAttribute('src')
+              || '';
+        if (!src || /^(data|javascript):/i.test(src)) return;
+        // Skip site-wide chrome / icon / logo images that aren't article figures.
+        if (/wk-logos|spcommon\.png|favicon|icon-/i.test(src)) return;
         const abs = new URL(src, baseUrl).href;
         const figEl = img.closest('figure');
         const captionEl = figEl ? figEl.querySelector('figcaption') : null;
         const caption = captionEl ? captionEl.textContent.trim().replace(/\s+/g, ' ') : '';
-        images.push({ url: abs, caption });
+        const alt = img.getAttribute('alt') || '';
+        images.push({ url: abs, caption, alt });
       });
     }
     return { title, authors, doi, abstract, bodyMd, images, sourceUrl: baseUrl };
@@ -954,7 +964,16 @@
       if (tag === 'figure') {
         const img = node.querySelector('img');
         const cap = node.querySelector('figcaption');
-        const src = img ? (img.getAttribute('src') || img.getAttribute('data-src') || '') : '';
+        let src = '';
+        if (img) {
+          // Same data-src priority as extractLWWArticleBody (LWW lazy-load).
+          src = img.getAttribute('data-src')
+             || img.getAttribute('data-large-image-url')
+             || img.getAttribute('data-original')
+             || img.getAttribute('src')
+             || '';
+          if (/^(data|javascript):/i.test(src)) src = '';
+        }
         md += '\n\n**[Figure]**';
         if (src) md += ' `' + src.split('/').pop().split('?')[0] + '`';
         if (cap) md += ' — ' + cap.textContent.trim().replace(/\s+/g, ' ');
