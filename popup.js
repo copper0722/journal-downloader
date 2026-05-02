@@ -397,12 +397,20 @@ async function startDownload() {
     try {
       let downloadUrl = article.pdfUrl;
       if (isLWWArticle(article)) {
-        const resolved = await resolveLWWPDFUrl(article.fullUrl || article.pdfUrl);
-        if (resolved) {
-          console.log('[LWW resolver] resolved', article.fullUrl, '→', resolved);
-          downloadUrl = resolved;
+        // v3.18 fast path: parseLWW_TOC already extracted the real downloadpdf.aspx
+        // URL from the article's <button data-config>. Use it directly — Chrome's
+        // download cookie jar carries the LWW session, no fetch resolver needed.
+        if (article.pdfUrl && /downloadpdf\.aspx/i.test(article.pdfUrl)) {
+          console.log('[LWW] using TOC-extracted PDF URL:', article.pdfUrl);
         } else {
-          console.warn('[LWW resolver] no candidate matched, falling back to', article.pdfUrl);
+          // Fallback: TOC didn't yield a real PDF URL → 2-step resolver (v3.17).
+          const resolved = await resolveLWWPDFUrl(article.fullUrl || article.pdfUrl);
+          if (resolved) {
+            console.log('[LWW resolver] resolved', article.fullUrl, '→', resolved);
+            downloadUrl = resolved;
+          } else {
+            console.warn('[LWW resolver] no candidate matched, falling back to', article.pdfUrl);
+          }
         }
       }
       await downloadFile(downloadUrl, filename);

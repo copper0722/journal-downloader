@@ -679,10 +679,40 @@
       const sectionLc = currentSection.toLowerCase();
       const isExcluded = EXCLUDED_SECTIONS.some(s => sectionLc.includes(s));
 
-      // Best-guess PDF URL — LWW articles commonly accept ?Pdf=Yes to redirect to
-      // the actual signed PDF endpoint. Verify on first download; if it fails the
-      // popup falls back to opening the fulltext page (user can manually download).
-      const pdfUrl = fullUrl.includes('?') ? `${fullUrl}&Pdf=Yes` : `${fullUrl}?Pdf=Yes`;
+      // PDF URL — extract from the article's PDF download button.
+      // LWW issue TOC pattern (Copper 2026-05-02 verified via osascript probe of
+      // hm4 Chrome Beta active CJASN tab): each article has a wk-icon-file-pdf
+      // <i> wrapped by <button class="user-menu__link--download" data-config='{
+      //   "eventDetail":{"url":"https://journals.lww.com/{journal}/_layouts/15/
+      //   oaks.journals/downloadpdf.aspx?trckng_src_pg=ArticleDisplayControl&an=
+      //   {accession_number}","gating":false},...}'>
+      // The data-config "url" is the real, accession-number-bound, subscriber-
+      // gated PDF endpoint. chrome.downloads.download uses Chrome's own cookie
+      // jar (not ext popup-context fetch), so the LWW session cookie travels
+      // automatically, and the server streams the PDF binary.
+      let pdfUrl = '';
+      const pdfBtn = el.querySelector('i.wk-icon-file-pdf');
+      if (pdfBtn) {
+        const btn = pdfBtn.closest('button[data-config], a[data-config], [data-config]');
+        if (btn) {
+          const cfg = btn.getAttribute('data-config');
+          try {
+            const parsed = JSON.parse(cfg);
+            const ev = parsed && (parsed.eventDetail || parsed.detail);
+            const url = ev && ev.url;
+            if (url) pdfUrl = new URL(url, location.href).href;
+          } catch (e) {
+            // JSON.parse fail; leave pdfUrl blank, fall back below.
+          }
+        }
+      }
+      // Fallback: if no data-config extraction succeeded, use the v3.13 best-
+      // guess `?Pdf=Yes` and let the v3.17 2-step resolver kick in at download
+      // time. v3.18 plan = the data-config path covers the canonical case;
+      // resolver-based fallback survives unmaintained / non-CJASN LWW UIs.
+      if (!pdfUrl) {
+        pdfUrl = fullUrl.includes('?') ? `${fullUrl}&Pdf=Yes` : `${fullUrl}?Pdf=Yes`;
+      }
 
       articles.push({
         doi,
