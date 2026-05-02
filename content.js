@@ -914,6 +914,24 @@
         })
         .catch(() => sendResponse({ supplements: [] }));
       return true;
+    } else if (request.action === 'resolveLWWPDF') {
+      // v3.17.0: same-origin fetch from the LWW tab so subscriber cookies
+      // travel automatically. Popup-context fetch is cross-origin and may
+      // not send LWW session cookies under MV3 + SameSite policies.
+      (async () => {
+        try {
+          const res = await fetch(request.url, { credentials: 'include', redirect: 'follow' });
+          if (!res.ok) {
+            sendResponse({ ok: false, status: res.status });
+            return;
+          }
+          const html = await res.text();
+          sendResponse({ ok: true, html });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e) });
+        }
+      })();
+      return true;
     }
   });
 })();

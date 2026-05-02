@@ -678,15 +678,56 @@ async function resolveLWWPDFUrl(articleFullUrl) {
     .replace(/[?&]Pdf=Yes\b/i, '')
     .replace(/\?$/, '')
     .replace(/&$/, '');
-  try {
-    const res = await fetch(cleanUrl, { credentials: 'include', redirect: 'follow' });
-    if (!res.ok) {
-      console.warn('[LWW resolver] fetch failed', cleanUrl, res.status);
+
+  // v3.17.0: prefer content-script fetch (same-origin to journals.lww.com,
+  // subscriber cookies travel automatically). Popup-context fetch is
+  // cross-origin (extension origin → journals.lww.com); even with
+  // host_permissions <all_urls> + credentials:'include', third-party cookies
+  // may not travel reliably under MV3 + SameSite policies, so the server
+  // serves an anonymous-view HTML that lacks data-pdf-url.
+  let html = await fetchHtmlViaContentScript(cleanUrl);
+  let fetchedVia = 'content-script';
+  if (!html) {
+    fetchedVia = 'popup-fetch';
+    try {
+      const res = await fetch(cleanUrl, { credentials: 'include', redirect: 'follow' });
+      if (!res.ok) {
+        console.warn('[LWW resolver] popup fetch failed', cleanUrl, res.status);
+        return null;
+      }
+      html = await res.text();
+    } catch (e) {
+      console.error('[LWW resolver] popup fetch error', e, cleanUrl);
       return null;
     }
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+  }
+  console.log('[LWW resolver] fetched via', fetchedVia, '→', cleanUrl, `(${html.length} chars)`);
+  return extractLWWPDFUrlFromHtml(html, cleanUrl);
+}
 
+function fetchHtmlViaContentScript(url) {
+  return new Promise(resolve => {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      if (!tabs[0]) return resolve(null);
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'resolveLWWPDF', url }, response => {
+        if (chrome.runtime.lastError) {
+          console.warn('[LWW resolver] content-script unavailable:', chrome.runtime.lastError.message);
+          resolve(null);
+        } else if (!response || !response.ok) {
+          const reason = response ? (response.error || `status=${response.status}`) : 'no response';
+          console.warn('[LWW resolver] content-script fetch failed:', reason);
+          resolve(null);
+        } else {
+          resolve(response.html);
+        }
+      });
+    });
+  });
+}
+
+function extractLWWPDFUrlFromHtml(html, baseUrl) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
     // DOM candidate selectors, priority order. Empirically the LWW PDF
     // endpoint lives on the article-tools <div>'s data-pdf-url attribute; the
     // earlier candidates target it most precisely, the rest are fallbacks.
@@ -711,7 +752,7 @@ async function resolveLWWPDFUrl(articleFullUrl) {
       if (!el) continue;
       const href = el.getAttribute('data-pdf-url') || el.getAttribute('href');
       if (!href) continue;
-      const abs = new URL(href, cleanUrl).href;
+      const abs = new URL(href, baseUrl).href;
       console.log('[LWW resolver] DOM candidate hit', sel, '→', abs);
       return abs;
     }
@@ -736,12 +777,12 @@ async function resolveLWWPDFUrl(articleFullUrl) {
       if (!m) continue;
       const raw = m[1] || m[0];
       const url = decodeHtmlEntities(raw);
-      const abs = new URL(url, cleanUrl).href;
+      const abs = new URL(url, baseUrl).href;
       console.log('[LWW resolver] regex candidate hit', re, '→', abs);
       return abs;
     }
 
-    console.warn('[LWW resolver] no candidate matched for', cleanUrl,
+    console.warn('[LWW resolver] no candidate matched for', baseUrl,
       '— first 500 chars of HTML:', html.substring(0, 500));
     return null;
   } catch (e) {
