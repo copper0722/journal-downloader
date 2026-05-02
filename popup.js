@@ -631,15 +631,28 @@ ${totalArticles} articles · ${oaCount} open access / free
   );
 }
 
-// ── LWW (Wolters Kluwer) PDF URL resolver (v3.14.0) ──
-// LWW articles do not expose a stable PDF URL at TOC level. The TOC parser
-// constructs `fullUrl + ?Pdf=Yes` as a best-guess, but many LWW deployments
-// serve an HTML interstitial at that URL — Chrome saves the response with a
-// .html extension because Content-Type is text/html. The reliable path is a
-// 2-step resolver: fetch the article fulltext page (with subscriber cookies),
-// then extract the real download URL (typically a signed CDN link on
-// download.lww.com or cdn-links.lww.com). Falls back to the ?Pdf=Yes
-// best-guess when no candidate matches.
+// ── LWW (Wolters Kluwer) PDF URL resolver (v3.16.0) ──
+// LWW article fulltext pages expose the real PDF endpoint as a `data-pdf-url`
+// attribute on the article-tools <div> (class "js-ejp-article-tools"), pointing
+// to /{journal}/_layouts/15/oaks.journals/downloadpdf.aspx?an={accession_number}.
+// The accession number ("an=" query) is the article's NLM-style identifier and
+// is server-side authenticated against the user's subscriber cookie.
+//
+// The misleading `?Pdf=Yes&Ppt=Article|...` URL on the same page is the
+// PowerPoint-slides export, NOT a PDF download. The bare `?Pdf=Yes` URL the
+// v3.13.0 TOC parser constructed redirects to the article HTML page when no
+// `an=` parameter is present, which Chrome then saves with a .html extension.
+//
+// This 2-step resolver fetches the article fulltext page with subscriber
+// cookies (host_permissions <all_urls>), extracts data-pdf-url via DOM, falls
+// back to regex on raw HTML, and only as last resort returns null so the
+// caller falls back to the v3.13.0 ?Pdf=Yes best-guess (which still produces
+// a .html — but mime sanity check warns).
+//
+// Reference HTML inspected: Dropbox/_inbox/cjn_0000000892_*.html (Copper
+// 2026-05-02). Pattern verified against the National Prevalence Taiwan CKD
+// CJASN article that was successfully downloaded as PDF manually
+// (national_prevalence,_regional_distribution,_and.19.pdf).
 
 function isLWWArticle(article) {
   if (!article) return false;
@@ -647,6 +660,15 @@ function isLWWArticle(article) {
   if (article.fullUrl && article.fullUrl.includes('journals.lww.com')) return true;
   if (article.pdfUrl && article.pdfUrl.includes('journals.lww.com')) return true;
   return false;
+}
+
+// Decode HTML entities such as &amp; -> & in URLs extracted from raw HTML
+// (DOMParser already decodes attribute values; regex paths see escaped form).
+function decodeHtmlEntities(s) {
+  if (!s) return s;
+  const t = document.createElement('textarea');
+  t.innerHTML = s;
+  return t.value;
 }
 
 async function resolveLWWPDFUrl(articleFullUrl) {
@@ -665,16 +687,22 @@ async function resolveLWWPDFUrl(articleFullUrl) {
     const html = await res.text();
     const doc = new DOMParser().parseFromString(html, 'text/html');
 
-    // DOM candidate selectors (priority order). Non-exhaustive — extend after
-    // observing real LWW article HTML structure across journals.
+    // DOM candidate selectors, priority order. Empirically the LWW PDF
+    // endpoint lives on the article-tools <div>'s data-pdf-url attribute; the
+    // earlier candidates target it most precisely, the rest are fallbacks.
     const domCandidates = [
+      // Most precise: js-ejp-article-tools div with PDF enabled flag.
+      '[data-pdf-url][data-pdf-enabled="true"]',
+      // Broader: any element with data-pdf-url (may be div, button, or anchor).
+      '[data-pdf-url]',
+      // Direct PDF anchor (rare on current LWW UI but cheap to check).
+      'a[href*="downloadpdf.aspx"]',
+      'a[href*="/_layouts/15/oaks.journals/downloadpdf"]',
+      // Generic PDF-mime alternate link.
+      'link[rel="alternate"][type="application/pdf"][href]',
+      // Legacy LWW CDN patterns kept as defensive fallback for other journals.
       'a[href*="download.lww.com"][href$=".pdf"]',
       'a[href*="cdn-links.lww.com"][href$=".pdf"]',
-      'a[href*="wolterskluwer_vitalstream_com"][href$=".pdf"]',
-      'a[href*="PermaLink/"][href$=".pdf"]',
-      'a[href*="permalink/"][href$=".pdf"]',
-      'a[data-pdf-url]',
-      'link[rel="alternate"][type="application/pdf"][href]',
       'a[href*=".pdf"][title*="PDF" i]',
       'a[href*=".pdf"][aria-label*="PDF" i]',
     ];
@@ -688,20 +716,26 @@ async function resolveLWWPDFUrl(articleFullUrl) {
       return abs;
     }
 
-    // Regex fallbacks on raw HTML (covers JS-templated / escaped strings that
-    // the DOMParser path may miss because they live inside <script> blocks
-    // or escaped JSON-config blobs).
+    // Regex fallbacks on raw HTML (covers JS-templated / escaped strings the
+    // DOMParser path may miss because they live inside <script> blocks or
+    // escaped JSON-config blobs). All candidates run through decodeHtmlEntities
+    // so &amp; -> & before new URL().
     const regexCandidates = [
+      // data-pdf-url attribute pointing to LWW downloadpdf.aspx (most precise).
+      /data-pdf-url\s*=\s*["']([^"']*downloadpdf\.aspx[^"']*)["']/i,
+      // Full LWW downloadpdf.aspx URL anywhere in the HTML (e.g. JSON config blobs).
+      /["'](https?:\/\/journals\.lww\.com\/[^"']+\/_layouts\/15\/oaks\.journals\/downloadpdf\.aspx[^"']*)["']/i,
+      // Legacy CDN patterns.
       /https?:\/\/download\.lww\.com\/[^"'\s<>]+\.pdf/i,
       /https?:\/\/cdn-links\.lww\.com\/[^"'\s<>]+\.pdf/i,
       /["']([^"']+wolterskluwer_vitalstream_com[^"']+\.pdf)["']/i,
       /EJ\.Tools\.downloadPDF\s*\(\s*["']([^"']+)["']/i,
-      /data-pdf-url\s*=\s*["']([^"']+)["']/i,
     ];
     for (const re of regexCandidates) {
       const m = html.match(re);
       if (!m) continue;
-      const url = m[1] || m[0];
+      const raw = m[1] || m[0];
+      const url = decodeHtmlEntities(raw);
       const abs = new URL(url, cleanUrl).href;
       console.log('[LWW resolver] regex candidate hit', re, '→', abs);
       return abs;
