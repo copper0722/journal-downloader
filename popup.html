@@ -14,6 +14,7 @@ body { width: 520px; font: 13px -apple-system, sans-serif; color: #222; }
 .header.bmj { background: #2a6ebb; }
 .header.aim { background: #005e39; }
 .header.jama { background: #b72025; }
+.header.lww { background: #1f3864; }
 .header.generic { background: #333; }
 .header h1 { font-size: 15px; font-weight: 600; }
 .header .count { font-size: 12px; opacity: 0.85; }
@@ -33,6 +34,7 @@ body { width: 520px; font: 13px -apple-system, sans-serif; color: #222; }
 .btn-bmj { background: #2a6ebb; }
 .btn-aim { background: #005e39; }
 .btn-jama { background: #b72025; }
+.btn-lww { background: #1f3864; }
 .btn-generic { background: #333; }
 
 #status { padding: 6px 14px; font-size: 11px; color: #666; background: #fafafa; border-bottom: 1px solid #eee; display: none; }
@@ -46,6 +48,7 @@ body { width: 520px; font: 13px -apple-system, sans-serif; color: #222; }
 .fill.bmj { background: #2a6ebb; }
 .fill.aim { background: #005e39; }
 .fill.jama { background: #b72025; }
+.fill.lww { background: #1f3864; }
 .fill.generic { background: #333; }
 
 #list { max-height: 500px; overflow-y: auto; }
@@ -69,12 +72,75 @@ body { width: 520px; font: 13px -apple-system, sans-serif; color: #222; }
 
 .empty { padding: 30px; text-align: center; color: #999; font-size: 13px; }
 .section-header { padding: 6px 14px; background: #f0f0f0; font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #ddd; }
+
+/* Dashboard — always visible, click row to open last-fetched issue */
+.dashboard { border-bottom: 1px solid #ddd; }
+.d-header { padding: 6px 14px; background: #f0f0f0; font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center; }
+.d-header .d-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: #999; font-size: 10px; }
+.j-list { max-height: 260px; overflow-y: auto; }
+.j-row { display: grid; grid-template-columns: 22px 1fr 50px 1.4fr 70px; gap: 6px; align-items: center; padding: 5px 14px; border-left: 3px solid #ccc; border-bottom: 1px solid #f3f3f3; font-size: 11px; cursor: pointer; }
+.j-row:hover { background: #fafafa; }
+.j-row .j-status { font-size: 13px; text-align: center; }
+.j-row .j-label { font-weight: 600; color: #222; }
+.j-row .j-cadence { color: #888; font-size: 10px; }
+.j-row .j-last { color: #555; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.j-row .j-overdue { color: #c62828; font-weight: 600; font-size: 10px; text-align: right; }
+.j-row .j-overdue.ok { color: #2e7d32; }
+.j-row .j-overdue.warn { color: #e67e22; }
+.j-row .j-overdue.muted { color: #888; }
+.d-actions { padding: 6px 14px; background: #fafafa; }
+.btn-add { background: #444; color: #fff; border: none; padding: 4px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; font-weight: 600; }
+.btn-add:hover { filter: brightness(0.85); }
+
+/* Add-journal modal */
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 100; }
+.modal-bg.active { display: flex; }
+.modal { background: #fff; padding: 14px; border-radius: 6px; width: 360px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+.modal h2 { font-size: 13px; margin-bottom: 10px; }
+.modal label { display: block; font-size: 11px; margin-top: 8px; color: #555; }
+.modal input, .modal select { width: 100%; padding: 5px 7px; border: 1px solid #ccc; border-radius: 3px; font-size: 12px; margin-top: 2px; }
+.modal-actions { margin-top: 12px; display: flex; gap: 6px; justify-content: flex-end; }
+.modal-actions button { padding: 5px 12px; border: none; border-radius: 3px; font-size: 11px; cursor: pointer; font-weight: 600; }
+.btn-modal-cancel { background: #ddd; color: #333; }
+.btn-modal-save { background: #006d2c; color: #fff; }
 </style>
 </head>
 <body>
 <div class="header generic" id="header">
   <h1 id="headerTitle">Journal Downloader</h1>
   <span class="count" id="countLabel"></span>
+</div>
+<div class="dashboard">
+  <div class="d-header">
+    <span>Journals</span>
+    <span class="d-hint">click row → last-fetched issue</span>
+  </div>
+  <div id="journalList" class="j-list"></div>
+  <div class="d-actions">
+    <button id="btnAddJournal" class="btn-add">+ Add monthly journal</button>
+  </div>
+</div>
+<div class="modal-bg" id="addModal">
+  <div class="modal">
+    <h2>Add new journal</h2>
+    <label>Label (display name)<input id="addLabel" type="text" placeholder="e.g. KI"></label>
+    <label>Key (lowercase id, no spaces)<input id="addKey" type="text" placeholder="e.g. ki"></label>
+    <label>Cadence
+      <select id="addCadence">
+        <option value="weekly">weekly</option>
+        <option value="biweekly">biweekly</option>
+        <option value="monthly" selected>monthly</option>
+        <option value="quarterly">quarterly</option>
+      </select>
+    </label>
+    <label>Day of week (weekly/biweekly only; 0=Sun..6=Sat)<input id="addDay" type="number" min="0" max="6" placeholder="optional"></label>
+    <label>Day of month (monthly only; 1-28)<input id="addDom" type="number" min="1" max="28" placeholder="optional, default 1"></label>
+    <label>Homepage URL (current-issue page)<input id="addHomepage" type="url" placeholder="https://..."></label>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" id="btnModalCancel">Cancel</button>
+      <button class="btn-modal-save" id="btnModalSave">Save</button>
+    </div>
+  </div>
 </div>
 <div class="controls">
   <label><input type="checkbox" id="selectAll" checked> All</label>

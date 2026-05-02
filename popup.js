@@ -1,8 +1,205 @@
 // PDF Batch Downloader — Popup Script
-// Generic PDF detection + NEJM/Nature enhancements
+// Generic PDF detection + NEJM/Nature enhancements + Journals dashboard (v3.12)
 
 let articles = [];
 let pageMode = 'generic';
+
+// ===========================================================================
+// Journals dashboard (v3.12) — last-fetched issue + cadence reminders
+// State persisted in chrome.storage.local under key 'journals'.
+// ===========================================================================
+
+const JOURNAL_DEFAULTS = {
+  nejm:         { label: 'NEJM',          cadence: 'weekly',   day: 4, color: '#b31b1b', homepage: 'https://www.nejm.org/toc/nejm/current' },
+  nejmevidence: { label: 'NEJM Evidence', cadence: 'monthly',  dom: 1, color: '#b31b1b', homepage: 'https://evidence.nejm.org/toc/evidence/current' },
+  nature:       { label: 'Nature',        cadence: 'weekly',   day: 4, color: '#005ea2', homepage: 'https://www.nature.com/nature/current-issue' },
+  science:      { label: 'Science',       cadence: 'weekly',   day: 5, color: '#a60f2d', homepage: 'https://www.science.org/toc/science/current' },
+  jama:         { label: 'JAMA',          cadence: 'weekly',   day: 2, color: '#b72025', homepage: 'https://jamanetwork.com/journals/jama/currentissue' },
+  lancet:       { label: 'Lancet',        cadence: 'weekly',   day: 5, color: '#e6001c', homepage: 'https://www.thelancet.com/journals/lancet/issues' },
+  bmj:          { label: 'BMJ',           cadence: 'weekly',   day: 5, color: '#2a6ebb', homepage: 'https://www.bmj.com/thisweek' },
+  aim:          { label: 'AIM',           cadence: 'biweekly', day: 3, color: '#005e39', homepage: 'https://www.acpjournals.org/toc/aim/current' },
+  jasn:         { label: 'JASN',          cadence: 'monthly',  dom: 1, color: '#005e39', homepage: 'https://journals.lww.com/jasn/pages/currenttoc.aspx' },
+  cjasn:        { label: 'CJASN',         cadence: 'monthly',  dom: 1, color: '#005e39', homepage: 'https://journals.lww.com/cjasn/pages/currenttoc.aspx' },
+};
+
+const CADENCE_DAYS = { weekly: 7, biweekly: 14, monthly: 30, quarterly: 91 };
+
+function loadJournals() {
+  return new Promise(resolve => {
+    chrome.storage.local.get('journals', data => {
+      if (data.journals && Object.keys(data.journals).length > 0) {
+        // Merge defaults: any new built-in journal that storage doesn't have yet, add it.
+        const merged = { ...JSON.parse(JSON.stringify(JOURNAL_DEFAULTS)), ...data.journals };
+        resolve(merged);
+      } else {
+        resolve(JSON.parse(JSON.stringify(JOURNAL_DEFAULTS)));
+      }
+    });
+  });
+}
+
+function saveJournals(journals) {
+  return new Promise(resolve => {
+    chrome.storage.local.set({ journals }, resolve);
+  });
+}
+
+function computeStatus(j) {
+  if (!j.lastIssue || !j.lastIssue.date) {
+    return { emoji: '⚪', label: 'BACKFILL', cls: 'muted' };
+  }
+  const last = new Date(j.lastIssue.date + 'T00:00:00');
+  const now = new Date();
+  const days = Math.floor((now - last) / 86400000);
+  const cycleDays = CADENCE_DAYS[j.cadence] || 7;
+  const cycles = Math.floor(days / cycleDays);
+  if (cycles <= 0) return { emoji: '🟢', label: 'on schedule', cls: 'ok' };
+  // within 2 days past the next-due → "DUE NOW", else overdue
+  const remainder = days - cycles * cycleDays;
+  if (cycles === 1 && remainder <= 2) return { emoji: '⚠', label: 'DUE NOW', cls: 'warn' };
+  return { emoji: '🔴', label: `−${cycles}`, cls: '' };
+}
+
+// Extract { vol, no } from a journal TOC URL. Returns null if not recognised.
+function extractIssueFromUrl(url) {
+  if (!url) return null;
+  const patterns = [
+    /\/toc\/[^/]+\/(\d+)\/(\d+)/,                        // NEJM, Science, AIM
+    /\/volumes\/(\d+)\/issues\/(\d+)/,                   // Nature
+    /\/journals\/lancet\/issue\/vol(\d+)no(\d+)/,        // Lancet
+    /bmj\.com\/content\/(\d+)\/(\d+)/,                   // BMJ
+    /jamanetwork\.com\/journals\/jama\/issue\/(\d+)\/(\d+)/, // JAMA
+  ];
+  for (const re of patterns) {
+    const m = url.match(re);
+    if (m) return { vol: m[1], no: m[2] };
+  }
+  return null;
+}
+
+// Map content.js detectMode() output ('nejm-toc', 'nature-toc', ...) → journal key.
+// For multi-journal platforms (LWW), the journal slug is read from the URL path.
+function modeToJournalKey(mode, url) {
+  if (!mode) return null;
+  const base = mode.split('-')[0];
+  // detectMode never says 'nejmevidence'; evidence.nejm.org currently isn't matched in content.js.
+  // Built-in mapping covers the 7 detected single-journal modes.
+  if (['nejm', 'nature', 'science', 'lancet', 'bmj', 'aim', 'jama'].includes(base)) return base;
+  // LWW (Wolters Kluwer) is a multi-journal platform; derive slug from URL path.
+  // Built-in JOURNAL_DEFAULTS covers jasn + cjasn; other LWW journals (KI, KI Reports, ...)
+  // require the user to add via the dashboard "+ Add monthly journal" modal first.
+  if (base === 'lww' && url) {
+    const m = url.match(/journals\.lww\.com\/([a-z]+)\//i);
+    if (m) {
+      const slug = m[1].toLowerCase();
+      if (['jasn', 'cjasn'].includes(slug)) return slug;
+    }
+  }
+  return null;
+}
+
+// If the active tab is a known journal TOC page, update that journal's lastIssue.
+async function recordLastIssueFromTab() {
+  const tab = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, t => r(t[0])));
+  if (!tab || !tab.url) return false;
+  const key = modeToJournalKey(pageMode, tab.url);
+  if (!key) return false;
+  const issue = extractIssueFromUrl(tab.url);
+  // For "current"-style URLs we still bump the lastIssue.url + date but leave vol/no null.
+  const journals = await loadJournals();
+  if (!journals[key]) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  const prev = journals[key].lastIssue || {};
+  // Skip update if URL identical and recorded same day.
+  if (prev.url === tab.url && prev.date === today) return false;
+  journals[key].lastIssue = {
+    date: today,
+    vol: issue ? issue.vol : (prev.vol || null),
+    no: issue ? issue.no : (prev.no || null),
+    url: tab.url,
+  };
+  await saveJournals(journals);
+  return true;
+}
+
+function renderJournals(journals) {
+  const list = document.getElementById('journalList');
+  if (!list) return;
+  // Order: weekly first (by day), then biweekly, then monthly, then quarterly, then unknown.
+  const order = ['weekly', 'biweekly', 'monthly', 'quarterly'];
+  const entries = Object.entries(journals).sort((a, b) => {
+    const [ka, ja] = a;
+    const [kb, jb] = b;
+    const ai = order.indexOf(ja.cadence);
+    const bi = order.indexOf(jb.cadence);
+    if (ai !== bi) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    return ka.localeCompare(kb);
+  });
+  let html = '';
+  for (const [key, j] of entries) {
+    const status = computeStatus(j);
+    const url = (j.lastIssue && j.lastIssue.url) || j.homepage || '#';
+    const issueLabel = j.lastIssue && j.lastIssue.date
+      ? (j.lastIssue.vol && j.lastIssue.no
+          ? `${j.lastIssue.date} v${j.lastIssue.vol}n${j.lastIssue.no}`
+          : j.lastIssue.date)
+      : '(never)';
+    const cadenceShort = j.cadence === 'monthly' ? 'mo' : j.cadence === 'biweekly' ? 'biwk' : j.cadence === 'quarterly' ? 'qtr' : 'wk';
+    html += `
+      <div class="j-row" data-url="${escHtml(url)}" data-key="${escHtml(key)}" style="border-left-color: ${j.color || '#ccc'}">
+        <span class="j-status">${status.emoji}</span>
+        <span class="j-label">${escHtml(j.label)}</span>
+        <span class="j-cadence">${cadenceShort}</span>
+        <span class="j-last">${escHtml(issueLabel)}</span>
+        <span class="j-overdue ${status.cls}">${escHtml(status.label)}</span>
+      </div>`;
+  }
+  list.innerHTML = html;
+  list.querySelectorAll('.j-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const url = row.dataset.url;
+      if (url && url !== '#') chrome.tabs.create({ url });
+    });
+  });
+}
+
+async function refreshDashboard() {
+  const journals = await loadJournals();
+  renderJournals(journals);
+}
+
+// Add-journal modal
+function openAddModal() {
+  document.getElementById('addModal').classList.add('active');
+  document.getElementById('addLabel').focus();
+}
+function closeAddModal() {
+  document.getElementById('addModal').classList.remove('active');
+  ['addLabel', 'addKey', 'addDay', 'addDom', 'addHomepage'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('addCadence').value = 'monthly';
+}
+async function saveAddModal() {
+  const label = document.getElementById('addLabel').value.trim();
+  let key = document.getElementById('addKey').value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cadence = document.getElementById('addCadence').value;
+  const dayRaw = document.getElementById('addDay').value;
+  const domRaw = document.getElementById('addDom').value;
+  const homepage = document.getElementById('addHomepage').value.trim();
+  if (!label) { alert('Label required'); return; }
+  if (!key) key = label.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const journals = await loadJournals();
+  if (journals[key]) { alert(`Key '${key}' already exists`); return; }
+  const j = { label, cadence, color: '#666', homepage: homepage || '#', custom: true };
+  if (dayRaw !== '' && (cadence === 'weekly' || cadence === 'biweekly')) j.day = Number(dayRaw);
+  if (domRaw !== '' && (cadence === 'monthly' || cadence === 'quarterly')) j.dom = Number(domRaw);
+  journals[key] = j;
+  await saveJournals(journals);
+  closeAddModal();
+  renderJournals(journals);
+}
 
 function sanitize(str) {
   return str.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').replace(/\s+/g, ' ').trim().substring(0, 120);
@@ -22,6 +219,7 @@ function modeBase() {
   if (pageMode.startsWith('bmj')) return 'bmj';
   if (pageMode.startsWith('aim')) return 'aim';
   if (pageMode.startsWith('jama')) return 'jama';
+  if (pageMode.startsWith('lww')) return 'lww';
   return 'generic';
 }
 
@@ -88,7 +286,10 @@ function renderList() {
     } else if (base === 'nejm' && a.typeName) {
       badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'bmj') {
-      badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Free</span>';
+      // STRICT (Copper 2026-05-02 bug fix): non-OA BMJ articles are subscription-gated even
+      // when the TOC suggests "free to read" — the PDF endpoint paywalls. Only the explicit
+      // .open-access-flag is downloadable; everything else is Metadata-only.
+      badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Metadata</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'aim') {
       // AIM has no reliable TOC-level OA flag; keep it metadata-only.
@@ -99,6 +300,15 @@ function renderList() {
       // (non-OA articles' PDFs are server-gated via /Content/CheckPdfAccess, generic
       // grabbing produces paywall HTML). hasPdf=isOA + checkbox disabled for non-OA.
       badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
+      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
+    } else if (base === 'lww') {
+      // LWW (JASN/CJASN/...) — TOC has no OA flag; whole platform is subscription-based.
+      // hasPdf is set in content.js parser by narrative-review section whitelist
+      // (Copper directive 2026-05-02): JASN/CJASN are subscribed, so articles in
+      // narrative-review sections (Mechanisms of Kidney Diseases / Clinical Nephrology
+      // Insights / Innovator Corner / Designing Clinical Trials / Perspective / Review)
+      // auto-flag for download; other sections are metadata-only.
+      badges = a.hasPdf ? '<span class="badge oa">Sub. + DL</span>' : '<span class="badge closed">Subscription</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'generic') {
       badges = '<span class="badge pdf">PDF</span>';
@@ -288,7 +498,7 @@ async function fetchAndSaveMd() {
 function saveToMarkdown() {
   const base = modeBase();
   const today = new Date().toISOString().split('T')[0];
-  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : 'TOC';
+  const journalName = base === 'nejm' ? 'NEJM' : base === 'nature' ? 'Nature' : base === 'science' ? 'Science' : base === 'lancet' ? 'Lancet' : base === 'bmj' ? 'BMJ' : base === 'aim' ? 'AIM' : base === 'jama' ? 'JAMA' : base === 'lww' ? ((articles[0] && articles[0].journal) || 'LWW') : 'TOC';
 
   // Detect issue identifier from URL path (if any)
   let issueTag = '';
@@ -315,6 +525,13 @@ function saveToMarkdown() {
     const firstCit = document.querySelector('.article--citation .meta-citation');
     const ct = firstCit ? firstCit.textContent : '';
     const m = ct.match(/\d{4};(\d+)\((\d+)\)/);
+    if (m) issueTag = `_${m[1]}-${m[2]}`;
+  }
+  // LWW /pages/currenttoc.aspx → derive issue tag from first article's fullUrl
+  // path /jasn/fulltext/2026/05000/...aspx (year+issueDigit composite).
+  if (!issueTag && base === 'lww') {
+    const fU = articles[0] && articles[0].fullUrl ? articles[0].fullUrl : '';
+    const m = fU.match(/\/[a-z]+\/fulltext\/(\d{4})\/(\d+)\//i);
     if (m) issueTag = `_${m[1]}-${m[2]}`;
   }
 
@@ -351,7 +568,8 @@ ${totalArticles} articles · ${oaCount} open access / free
     const atype = a.articleType || a.typeName || '';
     if (atype) meta.push(`**${atype}**`);
     if (a.isOA) meta.push('🟢 Open Access');
-    else if (a.isOA === false && base === 'bmj') meta.push('🔓 Free to read');
+    // BMJ non-OA: same treatment as JAMA/Science/Lancet — Metadata only (Copper 2026-05-02 bug fix:
+    // "Free to read" was misleading because BMJ paywalls non-OA PDFs at the endpoint).
     else if (a.isOA === false && base !== 'generic') meta.push('Metadata only');
     if (a.author) meta.push(`👤 ${a.author}`);
     if (meta.length) md += meta.join(' · ') + '\n\n';
@@ -407,10 +625,13 @@ function fetchSupplements(articleUrl) {
 }
 
 // ── Init ──
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Dashboard renders from storage immediately, regardless of current tab.
+  await refreshDashboard();
+
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     if (!tabs[0]) return;
-    chrome.tabs.sendMessage(tabs[0].id, { action: 'getArticles' }, response => {
+    chrome.tabs.sendMessage(tabs[0].id, { action: 'getArticles' }, async response => {
       if (chrome.runtime.lastError || !response) {
         document.getElementById('list').innerHTML = '<div class="empty">Cannot read page. Reload and try again.</div>';
         return;
@@ -418,13 +639,32 @@ document.addEventListener('DOMContentLoaded', () => {
       articles = response.articles || [];
       pageMode = response.mode || 'generic';
       renderList();
+      // Bump lastIssue if we landed on a TOC page; refresh dashboard if so.
+      const updated = await recordLastIssueFromTab();
+      if (updated) await refreshDashboard();
     });
   });
 
-  document.getElementById('btnDownload').addEventListener('click', startDownload);
-  document.getElementById('btnFetchAbs').addEventListener('click', fetchAndSaveMd);
+  document.getElementById('btnDownload').addEventListener('click', async () => {
+    await startDownload();
+    const updated = await recordLastIssueFromTab();
+    if (updated) await refreshDashboard();
+  });
+  document.getElementById('btnFetchAbs').addEventListener('click', async () => {
+    await fetchAndSaveMd();
+    const updated = await recordLastIssueFromTab();
+    if (updated) await refreshDashboard();
+  });
   document.getElementById('btnSaveMd').addEventListener('click', saveToMarkdown);  // kept for backward compat (hidden)
   document.getElementById('selectAll').addEventListener('change', e => {
     document.querySelectorAll('.articleCb:not(:disabled)').forEach(cb => { cb.checked = e.target.checked; });
+  });
+
+  // Add-journal modal wiring
+  document.getElementById('btnAddJournal').addEventListener('click', openAddModal);
+  document.getElementById('btnModalCancel').addEventListener('click', closeAddModal);
+  document.getElementById('btnModalSave').addEventListener('click', saveAddModal);
+  document.getElementById('addModal').addEventListener('click', e => {
+    if (e.target.id === 'addModal') closeAddModal();
   });
 });

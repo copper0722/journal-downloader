@@ -18,6 +18,10 @@
     if (host.includes('acpjournals.org') && path.match(/^\/doi\/10\.7326\//)) return 'aim-article';
     if (host.includes('jamanetwork.com') && path.match(/\/currentissue|\/issue\//)) return 'jama-toc';
     if (host.includes('jamanetwork.com') && path.match(/\/fullarticle\/|\/article-abstract\//)) return 'jama-article';
+    // LWW (Wolters Kluwer) journals platform — JASN/CJASN/KI etc.
+    // currenttoc.aspx is a server redirect to the latest issue TOC; /toc/ also possible.
+    if (host.includes('journals.lww.com') && path.match(/\/pages\/currenttoc\.aspx|\/toc\//i)) return 'lww-toc';
+    if (host.includes('journals.lww.com') && path.includes('/fulltext/')) return 'lww-article';
     return 'generic';
   }
 
@@ -306,10 +310,12 @@
   //   PDF link:        a[href$=".full.pdf"] inside .bmj-article-links
   //   OA marker:       li.open-access-flag (text "Open Access") inside .bmj-article-links
   //   Authors:         not reliably present at TOC level on BMJ; leave blank
-  // OA rule (match Lancet pattern): hasPdf = isOA ? BMJ PDFs are often free even for non-OA research,
-  //   but to stay consistent with Copper's Lancet directive ("要有看到 open access 字眼"),
-  //   BMJ is more permissive: BMJ Editorials/Comments/News are all free-to-read →
-  //   hasPdf = !!pdfUrl (any extractable PDF URL is downloadable). isOA still reports the green-OA flag.
+  // OA rule (STRICT, Copper directive 2026-05-02 bug fix):
+  //   Earlier permissive rule (hasPdf = !!pdfUrl) was wrong: BMJ Editorials/Comments/News
+  //   that look "free" on the TOC are still subscription-gated at the PDF endpoint, so the
+  //   permissive flag advertised non-downloadable items as free. Aligning with JAMA / Science
+  //   / Lancet / Nature: hasPdf = isOA. Only the explicit `.open-access-flag` triggers download
+  //   eligibility; everything else is metadata-only.
   function parseBMJ_TOC() {
     // Walk in document order so we can tag each toc-item with its preceding h2.toc-heading section label.
     const walked = document.querySelectorAll('h2.toc-heading, li.toc-item');
@@ -366,7 +372,7 @@
         author: '',
         typeCode: '',
         typeName: currentSection,   // section heading = article class (This Week / Research / Comment / Education / Obituaries)
-        hasPdf: !!pdfUrl,           // BMJ: most articles have free PDF regardless of OA flag
+        hasPdf: isOA,               // STRICT: non-OA PDFs are subscription-gated even when URL appears (Copper 2026-05-02 bug fix)
         isOA,
         journal: 'BMJ',
       });
@@ -571,6 +577,127 @@
     return articles;
   }
 
+  // ── LWW (Wolters Kluwer) TOC parser ──
+  // DOM verified 2026-05-02 against journals.lww.com/jasn/pages/currenttoc.aspx
+  // (snapshot saved at Dropbox/_Inbox/jasn-toc-snap-2026-05-02.html). LWW platform
+  // is shared by JASN, CJASN, KI Reports, and most Wolters Kluwer journals.
+  //
+  // Article wrapper: HTML5 <article> element (one per article entry; 20 in JASN current).
+  // Section heading: nearest preceding <h3 aria-expanded="false"> inside <section class="content-box">.
+  //   Sections in JASN 2026-05: Editorial / Basic Research / Clinical Research /
+  //   Mechanisms of Kidney Diseases / Clinical Nephrology Insights / Innovator Corner /
+  //   Designing Clinical Trials / Perspective.
+  // Title + fullUrl: <header><h4><a title="..." href="...">.
+  // Authors: .js-few-authors .authors.
+  // DOI: extracted from any descendant element's data-config JSON containing
+  //   "Article|<journal>:<year>:<issue>:<id>|10.<prefix>/...|" — DOI prefix 10.1681 (JASN) /
+  //   10.2215 (CJASN); fallback to URL-derived articleId.
+  //
+  // OA flag: LWW TOC has NO open-access flag at the TOC level. The platform is
+  //   subscription-based by default. Per Copper directive 2026-05-02, JASN and CJASN
+  //   are subscribed: the parser flags hasPdf=true for narrative-review section
+  //   headings (Mechanisms of Kidney Diseases / Clinical Nephrology Insights /
+  //   Innovator Corner / Designing Clinical Trials / Perspective / Review) so they
+  //   are auto-checked for download in the popup. Other sections stay metadata-only.
+  //
+  // PDF endpoint: LWW PDFs require navigating the article fulltext page first;
+  //   pdfUrl is set to fullUrl + ?Pdf=Yes as a best-guess pattern (LWW often honors
+  //   this query string and 302-redirects to the actual PDF endpoint with token).
+  //   TODO: verify against article page download button; if pattern fails, replace
+  //   with a 2-step fetch (fetch fulltext page → extract download.lww.com signed URL).
+  function parseLWW_TOC() {
+    // Narrative-review section whitelist — Copper 2026-05-02. Subscribed JASN/CJASN
+    // articles in these sections are always download-eligible regardless of OA flag.
+    // Substring match (case-insensitive) against the section heading text.
+    const NARRATIVE_REVIEW_SECTIONS = [
+      'mechanisms of kidney diseases',         // JASN
+      'clinical nephrology insights',          // JASN
+      'innovator corner',                      // JASN
+      'designing clinical trials',             // JASN
+      'perspective',                           // JASN / CJASN
+      'review',                                // generic catch-all (also matches "Review")
+      'lifestyle medicine and kidney health',  // CJASN (Copper 2026-05-02)
+      'kidney health watch',                   // CJASN (Copper 2026-05-02)
+    ];
+
+    // Walk the article-list region in document order, tracking the most recent <h3>
+    // section heading and emitting one record per <article>.
+    const root = document.querySelector('.article-list') || document.body;
+    const walked = root.querySelectorAll('h3, article');
+    const articles = [];
+    const seen = new Set();
+
+    // Journal slug from URL path (jasn / cjasn / ki / etc.).
+    const slugMatch = location.pathname.match(/^\/([a-z]+)\//i);
+    const journalSlug = slugMatch ? slugMatch[1].toLowerCase() : 'lww';
+    const journalName = journalSlug.toUpperCase();
+
+    let currentSection = '';
+    walked.forEach(el => {
+      if (el.tagName === 'H3') {
+        // Only treat <h3> with aria-expanded as a TOC section heading (skip in-article h3).
+        if (el.hasAttribute('aria-expanded') || el.closest('section.content-box')) {
+          currentSection = (el.textContent || '').trim().replace(/\s+/g, ' ');
+        }
+        return;
+      }
+
+      // <article>
+      const titleA = el.querySelector('header h4 a, h4 > a[title]');
+      if (!titleA) return;
+      const title = (titleA.getAttribute('title') || titleA.textContent || '').trim().replace(/\s+/g, ' ');
+      if (!title) return;
+      const fullHref = titleA.getAttribute('href') || '';
+      const fullUrl = fullHref.startsWith('http') ? fullHref : `https://journals.lww.com${fullHref}`;
+
+      // DOI: scan any descendant data-config JSON for a 10.<digits>/... DOI.
+      let doi = '';
+      const cfgEls = el.querySelectorAll('[data-config]');
+      for (const cfgEl of cfgEls) {
+        const cfg = cfgEl.getAttribute('data-config') || '';
+        const m = cfg.match(/(10\.\d{4,5}\/[A-Za-z][\w./-]+)/);
+        if (m) { doi = m[1].toLowerCase().replace(/[.,;]+$/, ''); break; }
+      }
+
+      // articleId: derived from DOI suffix or URL slug.
+      const articleId = doi
+        ? doi.replace(/^10\.\d{4,5}\//, '').replace(/[^a-z0-9]/g, '_')
+        : (fullUrl.split('/').pop() || '').replace(/\.aspx$/, '');
+
+      const dedupKey = doi || fullUrl;
+      if (seen.has(dedupKey)) return;
+      seen.add(dedupKey);
+
+      const authorsEl = el.querySelector('.js-few-authors .authors, .authors');
+      const author = authorsEl ? authorsEl.textContent.trim().replace(/\s+/g, ' ').replace(/<[^>]+>/g, '') : '';
+
+      // Narrative-review whitelist match (case-insensitive substring).
+      const sectionLc = currentSection.toLowerCase();
+      const isNarrativeReview = NARRATIVE_REVIEW_SECTIONS.some(s => sectionLc.includes(s));
+
+      // Best-guess PDF URL — LWW articles commonly accept ?Pdf=Yes to redirect to
+      // the actual signed PDF endpoint. Verify on first download; if it fails the
+      // popup falls back to opening the fulltext page (user can manually download).
+      const pdfUrl = fullUrl.includes('?') ? `${fullUrl}&Pdf=Yes` : `${fullUrl}?Pdf=Yes`;
+
+      articles.push({
+        doi,
+        articleId,
+        title,
+        abstract: '',                 // LWW TOC has no inline abstract preview.
+        pdfUrl,
+        fullUrl,
+        author,
+        typeCode: '',
+        typeName: currentSection,
+        hasPdf: isNarrativeReview,    // STRICT: only narrative-review whitelist auto-downloads (subscribed access; Copper 2026-05-02).
+        isOA: false,                  // LWW TOC has no OA flag; subscription default.
+        journal: journalName,
+      });
+    });
+    return articles;
+  }
+
   // ── Fetch abstract from journal article page (mode-aware, all journals) ──
   // Per-journal selector maps with multiple fallbacks for HTML robustness.
   const ABSTRACT_SELECTORS = {
@@ -750,6 +877,7 @@
       else if (mode === 'bmj-toc') articles = parseBMJ_TOC();
       else if (mode === 'aim-toc') articles = parseAIM_TOC();
       else if (mode === 'jama-toc') articles = parseJAMA_TOC();
+      else if (mode === 'lww-toc') articles = parseLWW_TOC();
       else articles = parseGeneric();
       sendResponse({ articles, mode });
     } else if (request.action === 'fetchOneAbstract') {
