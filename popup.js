@@ -312,9 +312,15 @@ function renderList() {
       badges = a.isOA ? '<span class="badge oa">OA</span>' : '<span class="badge closed">Metadata</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'aim') {
-      // AIM has no reliable TOC-level OA flag; keep it metadata-only.
-      if (a.typeName) badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
-      badges += ' <span class="badge closed">Metadata</span>';
+      // v3.22.0 (Copper 2026-05-06): AIM routed through the same text+image
+      // extraction path as LWW (Atypon body HTML loads in subscriber session
+      // even when PDF is gated). hasPdf=true for ALL articles regardless of OA;
+      // user can still uncheck individually. FREE badge is surfaced from the
+      // OA marker scan in parseAIM_TOC.
+      badges = a.isOA
+        ? '<span class="badge oa">Free text+img</span>'
+        : '<span class="badge oa">Sub. text+img</span>';
+      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'jama') {
       // JAMA has explicit .badge.icon-free OA flag — STRICT gate per Copper 2026-04-22
       // (non-OA articles' PDFs are server-gated via /Content/CheckPdfAccess, generic
@@ -648,15 +654,15 @@ ${totalArticles} articles · ${oaCount} open access / free
   );
 }
 
-// ── LWW text+image extraction bundle (v3.20.0) ──
-// LWW PDF stream is server-gated and not feasible from extension context
-// (v3.13–v3.18 attempts all returned text/html). v3.20 takes a different path:
-// the article fulltext page itself IS rendered for subscribers in HTML form, so
-// the content-script can fetch it (same-origin → cookie travels), parse the
-// body to markdown, and download each figure binary as a separate file. The
-// resulting bundle ~/Downloads/journal-downloader/{citationKey}/{raw.md +
-// figures/*} is then user-moved into Dropbox/_inbox where the existing wikify
-// pipeline picks it up.
+// ── Text+image extraction bundle (v3.20 LWW, v3.22 AIM) ──
+// Function name is historical: it now handles every journal whose article body
+// HTML is reachable in subscriber sessions but whose PDF stream is server-gated
+// (LWW JASN/CJASN since v3.20, AIM Atypon since v3.22). Mechanism: content-
+// script same-origin fetch of fulltext URL → parse body to markdown → download
+// each figure binary as a separate file. Bundle output is
+// ~/Downloads/journal-downloader/{citationKey}/{raw.md + figures/*} which the
+// user moves into the inbox where the wikify pipeline picks it up. Routing key
+// remains `kind === 'lww-text-image'` for backward compatibility.
 
 async function extractAndSaveLWWBundle(article, statusSpan) {
   // Step 1: ask content-script (running on the active LWW tab, same-origin) to
@@ -703,12 +709,12 @@ async function extractAndSaveLWWBundle(article, statusSpan) {
     `fulltext_url: ${result.sourceUrl || article.fullUrl}`,
     `section: ${JSON.stringify(article.typeName || '')}`,
     `captured_date: ${today}`,
-    'extracted_via: journal-downloader-v3.20.0-content-script',
+    `extracted_via: journal-downloader-v${chrome.runtime.getManifest().version}-content-script`,
     'fidelity_notes: |',
     '  HTML body + figure binaries extracted via Chrome ext content-script same-',
-    '  origin fetch (subscriber session). LWW PDF stream is server-gated and not',
-    '  feasible from ext; this is the substitute path. Image vision-description',
-    '  + downstream wikify happens in the standard pipeline.',
+    '  origin fetch (subscriber session). Publisher PDF stream is server-gated',
+    '  and not feasible from ext; text+image is the substitute path. Image',
+    '  vision-description + downstream wikify happens in the standard pipeline.',
     `figure_count: ${result.images.length}`,
     'sidecar: figures/',
     '---',

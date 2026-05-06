@@ -403,9 +403,18 @@
   //                    containing only ","/" and "/et-al read-more link — filter on length + regex
   //   TOC abstract:    .issue__item__abstract — AIM renders a 2-4 sentence summary directly on
   //                    the TOC (unlike Lancet/BMJ which require page fetch). Use as-is.
-  //   PDF link:        not rendered on TOC.
-  //   OA marker:       AIM TOC exposes no reliable open-access indicator. Public build keeps
-  //                    AIM entries metadata-only to avoid downloading subscription-gated PDFs.
+  //   PDF link:        not rendered on TOC; also, the article PDF endpoint is server-gated and
+  //                    not feasible from extension context. v3.22 routes AIM through the same
+  //                    text+image extraction path as LWW (kind='lww-text-image'): same-origin
+  //                    fetch of the fulltext page, parse body to markdown, write raw.md +
+  //                    figure binaries. Default-on for ALL articles regardless of OA status
+  //                    because the body HTML loads in subscriber sessions even when PDF is gated
+  //                    (Copper 2026-05-06 directive).
+  //   OA marker:       Per Copper 2026-05-06: OA articles render a literal "FREE" word/badge
+  //                    after the title. parseAIM_TOC scans for a standalone element whose text
+  //                    content matches /^free$/i, and also accepts common Atypon access-free
+  //                    CSS classes as fallback. The flag drives badge display only — download
+  //                    eligibility is independent (always default-on).
   function parseAIM_TOC() {
     // Walk h5-section-headers + issue-items together in document order so each item can be
     // tagged with its preceding section heading (same pattern as BMJ parseBMJ_TOC).
@@ -455,19 +464,39 @@
       const absEl = el.querySelector('.issue__item__abstract');
       const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
 
+      // OA detection — Copper 2026-05-06: AIM renders a literal "FREE" word/badge after
+      // the title for OA items. Multi-candidate detection:
+      //   (1) common Atypon access-free CSS classes (best, deterministic)
+      //   (2) standalone leaf element whose textContent is exactly "FREE"/"Free" (text fallback)
+      // Both checks scoped to the issue-item to avoid cross-item leakage.
+      let isOA = !!el.querySelector(
+        'i.icon-access-free, i.text-access-free, .access-free, ' +
+        '.free-access, span.free, [aria-label*="Free Access" i], [title*="Free Access" i]'
+      );
+      if (!isOA) {
+        for (const c of el.querySelectorAll('span, em, i, b, strong')) {
+          if (c.children.length === 0 && /^\s*free\s*$/i.test(c.textContent || '')) {
+            isOA = true;
+            break;
+          }
+        }
+      }
+
+      const fullUrl = `https://www.acpjournals.org/doi/${doi}`;
       articles.push({
         doi,
         articleId,
         title,
         abstract,
-        pdfUrl: '',
-        fullUrl: `https://www.acpjournals.org/doi/${doi}`,
+        pdfUrl: fullUrl,           // text+image path uses fullUrl; pdfUrl mirror keeps popup branches consistent
+        fullUrl,
         author,
         typeCode: '',
         typeName: currentSection,  // section heading drives type
-        hasPdf: false,
-        isOA: false,
+        hasPdf: true,              // body extraction works regardless of OA — Copper 2026-05-06 directive
+        isOA,                      // FREE marker drives badge only, not download gate
         journal: 'AIM',
+        kind: 'lww-text-image',    // route through extractAndSaveLWWBundle (Atypon body extraction)
       });
     });
     return articles;
@@ -892,11 +921,30 @@
     }
   });
 
-  // ── LWW article fulltext extractor (v3.20.0) ──
+  // ── Article fulltext extractor (text+image path; v3.20 LWW, v3.22 AIM) ──
+  // Selector unions cover both LWW (Wolters Kluwer .ejp-fulltext-content schema) and Atypon
+  // (AIM/ACP .hlFld-Fulltext + .citation__title schema). Final fallbacks (`main`, `article`,
+  // `[itemprop="description"]`) catch unknown layouts so the bundle is best-effort even when
+  // a publisher's DOM has drifted. Tagged with the historic name extractLWWArticleBody for
+  // backward-compat with the message-handler routing in content.js / popup.js.
   function extractLWWArticleBody(doc, baseUrl) {
-    const titleEl = doc.querySelector('h1.article-title, h1[itemprop="headline"], .article-title h1, .article-title');
+    const titleEl = doc.querySelector(
+      // LWW
+      'h1.article-title, .article-title h1, .article-title, ' +
+      // Atypon (AIM) — citation title block
+      'h1.citation__title, .citation__title, .article-header h1, .article__title, ' +
+      // generic
+      'h1[itemprop="headline"], main h1, article h1'
+    );
     const title = titleEl ? titleEl.textContent.trim().replace(/\s+/g, ' ') : '';
-    const authorEl = doc.querySelector('.al-author-name, .authors-list, .authors, [itemprop="author"]');
+    const authorEl = doc.querySelector(
+      // LWW
+      '.al-author-name, .authors-list, .authors, ' +
+      // Atypon (AIM) — contributors / List of Authors
+      '.contrib-meta, ul.loa, .article-header .loa, .article-header .authors, ' +
+      // generic
+      '[itemprop="author"]'
+    );
     const authors = authorEl ? authorEl.textContent.trim().replace(/\s+/g, ' ').replace(/\n/g, '; ') : '';
     let doi = '';
     const doiCandidates = [
@@ -908,9 +956,24 @@
       const m = v.match(/(10\.\d{4,5}\/[A-Za-z][\w./-]+)/);
       if (m) { doi = m[1].toLowerCase(); break; }
     }
-    const absEl = doc.querySelector('section.abstract, .article-abstract, .abstract, [itemprop="description"]');
+    const absEl = doc.querySelector(
+      // LWW
+      'section.abstract, .article-abstract, .abstract, ' +
+      // Atypon (AIM) — already DOM-verified in ABSTRACT_SELECTORS.aim
+      'section[role="doc-abstract"], section#abstract, .hlFld-Abstract, ' +
+      'div[class*="abstractInFull"], .article__summary, ' +
+      // generic
+      '[itemprop="description"]'
+    );
     const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
-    const bodyContainer = doc.querySelector('.ejp-fulltext-content, .article-body, main[role="main"], main, article');
+    const bodyContainer = doc.querySelector(
+      // LWW
+      '.ejp-fulltext-content, .article-body, ' +
+      // Atypon (AIM) — full text body wrapper
+      '.hlFld-Fulltext, .article__body, .NLM_article-body, article[role="main"], ' +
+      // generic
+      'main[role="main"], main, article'
+    );
     const bodyMd = bodyContainer ? simpleHtmlToMarkdown(bodyContainer) : '(article body container not found)';
     const images = [];
     if (bodyContainer) {
