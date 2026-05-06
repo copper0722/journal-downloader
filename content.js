@@ -956,16 +956,33 @@
       const m = v.match(/(10\.\d{4,5}\/[A-Za-z][\w./-]+)/);
       if (m) { doi = m[1].toLowerCase(); break; }
     }
-    const absEl = doc.querySelector(
-      // LWW
-      'section.abstract, .article-abstract, .abstract, ' +
-      // Atypon (AIM) — already DOM-verified in ABSTRACT_SELECTORS.aim
-      'section[role="doc-abstract"], section#abstract, .hlFld-Abstract, ' +
-      'div[class*="abstractInFull"], .article__summary, ' +
+    // Abstract — pick the LONGEST non-trivial match across the selector union
+    // rather than first-match. v3.22.0 used querySelector(combinedList) which
+    // returns the first DOM-order match; on AIM Practice Points pages that was
+    // a short editor blurb (`.abstract` near the top echoing dc.description),
+    // shadowing the real structured abstract under `section[role="doc-abstract"]`
+    // / `.hlFld-Abstract`. Length-based selection prefers the rich block.
+    const ABS_SELECTORS = [
+      // Atypon (AIM/ACP, Science) — structured doc-abstract is preferred
+      'section[role="doc-abstract"]',
+      'div.hlFld-Abstract',
+      'section#abstract',
+      'div[class*="abstractInFull"]',
+      // LWW (Wolters Kluwer)
+      'section.abstract',
+      '.article-abstract',
       // generic
-      '[itemprop="description"]'
-    );
-    const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
+      '.abstract',
+      '.article__summary',
+      '[itemprop="description"]',
+    ];
+    let abstract = '';
+    for (const sel of ABS_SELECTORS) {
+      const el = doc.querySelector(sel);
+      if (!el) continue;
+      const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+      if (text.length > abstract.length && text.length > 50) abstract = text;
+    }
     const bodyContainer = doc.querySelector(
       // LWW
       '.ejp-fulltext-content, .article-body, ' +

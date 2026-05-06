@@ -527,6 +527,14 @@ async function fetchAndSaveMd() {
                 console.warn('[fetchAndSaveMd] empty abstract from extractLWWArticle',
                   article.fullUrl, 'kept TOC summary');
               }
+              // v3.22.2 (Copper 2026-05-06 directive "點進去後抓全文字"): also
+              // capture the full body markdown so saveToMarkdown can inline it
+              // for Practice Points / Clinical Guidelines articles whose
+              // abstract is intentionally short and the click-through value is
+              // in the body sections (Practice Points list, Methods, Recs).
+              if (response.bodyMd && response.bodyMd.length > 100) {
+                articles[article.index].bodyMd = response.bodyMd;
+              }
             } else {
               console.warn('[fetchAndSaveMd] extractLWWArticle failed',
                 article.fullUrl, chrome.runtime.lastError, response);
@@ -581,6 +589,13 @@ async function fetchAndSaveMd() {
 
   btn.textContent = 'Download All Abstracts → MD';
   btn.disabled = false;
+}
+
+// Shift every leading-of-line markdown heading down by `by` levels (capped at
+// h6). Used when inlining bodyMd into the per-article block so its h1/h2/h3
+// section headings don't clash with the batch MD's `### N. Title` (h3) entry.
+function downshiftHeadings(md, by) {
+  return md.replace(/^(#{1,6}) /gm, (_, h) => '#'.repeat(Math.min(6, h.length + by)) + ' ');
 }
 
 // ── Save TOC as Markdown (all modes) ──
@@ -658,6 +673,11 @@ ${totalArticles} articles · ${oaCount} open access / free
     const atype = a.articleType || a.typeName || '';
     if (atype) meta.push(`**${atype}**`);
     if (a.isOA) meta.push('🟢 Open Access');
+    // v3.22.2: kind='lww-text-image' (LWW JASN/CJASN, AIM since v3.22) is NOT
+    // metadata-only — body content was extracted via subscriber-session same-
+    // origin fetch. Show "Subscription (text+img)" so the MD reader knows the
+    // article body is reachable in the bundle/inlined section, just not as PDF.
+    else if (a.kind === 'lww-text-image') meta.push('Subscription (text+img)');
     // BMJ non-OA: same treatment as JAMA/Science/Lancet — Metadata only (Copper 2026-05-02 bug fix:
     // "Free to read" was misleading because BMJ paywalls non-OA PDFs at the endpoint).
     else if (a.isOA === false && base !== 'generic') meta.push('Metadata only');
@@ -679,6 +699,16 @@ ${totalArticles} articles · ${oaCount} open access / free
     if (a.abstract) {
       md += `> ${a.abstract}\n\n`;
       if (a.fullUrl) md += `[→ 原文](<${a.fullUrl}>)\n\n`;
+    }
+
+    // v3.22.2: for kind='lww-text-image' articles whose abstract is intentionally
+    // short (Practice Points / Clinical Guidelines / Editorials etc.), inline the
+    // full body markdown so the batch MD carries the click-through full text the
+    // way Copper expects ("AIM最好的抓法，就是點進去後抓全文字"). Heading levels
+    // are shifted down by 2 so the body's h2/h3 sections don't clash with the
+    // article's own h3 entry.
+    if (a.bodyMd) {
+      md += `#### Body\n\n${downshiftHeadings(a.bodyMd, 2).trim()}\n\n`;
     }
 
     md += '---\n\n';
