@@ -1016,14 +1016,26 @@
       const text = cleanText(el);
       if (text.length > abstract.length && text.length > 50) abstract = text;
     }
-    const bodyContainer = doc.querySelector(
+    // Iterate selectors in priority order (querySelector with a combined list
+    // returns DOM-order winner, not selector-list-order — on AIM `<main>`
+    // wraps `<article>`, so the combined form would always pick MAIN even
+    // though ARTICLE is the cleaner container). Try each selector individually
+    // so the listed priority is respected.
+    const BODY_SELECTORS = [
       // LWW
-      '.ejp-fulltext-content, .article-body, ' +
+      '.ejp-fulltext-content', '.article-body',
       // Atypon (AIM) — full text body wrapper
-      '.hlFld-Fulltext, .article__body, .NLM_article-body, article[role="main"], ' +
-      // generic
-      'main[role="main"], main, article'
-    );
+      '.hlFld-Fulltext', '.article__body', '.NLM_article-body', 'article[role="main"]',
+      // generic — prefer `article` over `main` so AIM body skips main's wrapper
+      // chrome (st-header, axel-publication scripts, citation templates) and
+      // anchors on the cleaner article-content tag (DOM-verified 2026-05-06).
+      'article', 'main[role="main"]', 'main',
+    ];
+    let bodyContainer = null;
+    for (const sel of BODY_SELECTORS) {
+      bodyContainer = doc.querySelector(sel);
+      if (bodyContainer) break;
+    }
     const bodyMd = bodyContainer ? simpleHtmlToMarkdown(bodyContainer) : '(article body container not found)';
     const images = [];
     if (bodyContainer) {
@@ -1052,7 +1064,19 @@
 
   function simpleHtmlToMarkdown(rootEl) {
     const clone = rootEl.cloneNode(true);
-    clone.querySelectorAll('script, style, nav, .references-extra, .article-tools, .lww-ejp-article-tools, .js-ejp-article-tools, [aria-hidden="true"]').forEach(e => e.remove());
+    clone.querySelectorAll(
+      // platform-agnostic chrome
+      'script, style, nav, [aria-hidden="true"], ' +
+      // LWW (Wolters Kluwer) tooling
+      '.references-extra, .article-tools, .lww-ejp-article-tools, .js-ejp-article-tools, ' +
+      // Atypon / AIM tooling + commerce + sidecar content (DOM-verified 2026-05-06):
+      // ecommerce purchase/signin forms, self-citation tools, altmetric badges,
+      // related-content rails, FREE access badges, sticky article header, scripts/templates.
+      '.st-header, [class*="ecommerce"], [class*="self-citation"], [class*="altmetric"], ' +
+      '[class*="related-articles"], [class*="related-content"], [class*="core-metrics"], ' +
+      '.core__article__access__badges, .citation__access__type, .free-access, ' +
+      'template, link[rel="stylesheet"]'
+    ).forEach(e => e.remove());
     let md = '';
     function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) { md += node.textContent.replace(/\s+/g, ' '); return; }
