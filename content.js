@@ -465,11 +465,15 @@
       const abstract = absEl ? absEl.textContent.trim().replace(/\s+/g, ' ') : '';
 
       // OA detection — Copper 2026-05-06: AIM renders a literal "FREE" word/badge after
-      // the title for OA items. Multi-candidate detection:
-      //   (1) common Atypon access-free CSS classes (best, deterministic)
-      //   (2) standalone leaf element whose textContent is exactly "FREE"/"Free" (text fallback)
+      // the title for OA items. DOM-verified 2026-05-06 via AppleScript on a real OA
+      // article (ANNALS-25-04883): the marker is `<span class="icon-lock_free">FREE</span>`.
+      // Multi-candidate detection:
+      //   (1) explicit Atypon/AIM access-free CSS classes (deterministic — `.icon-lock_free`
+      //       is the AIM-specific class, others cover platform variants)
+      //   (2) standalone leaf element whose textContent is exactly "FREE"/"Free" (fallback)
       // Both checks scoped to the issue-item to avoid cross-item leakage.
       let isOA = !!el.querySelector(
+        'span.icon-lock_free, [class*="icon-lock_free"], ' +
         'i.icon-access-free, i.text-access-free, .access-free, ' +
         '.free-access, span.free, [aria-label*="Free Access" i], [title*="Free Access" i]'
       );
@@ -927,6 +931,35 @@
   // `[itemprop="description"]`) catch unknown layouts so the bundle is best-effort even when
   // a publisher's DOM has drifted. Tagged with the historic name extractLWWArticleBody for
   // backward-compat with the message-handler routing in content.js / popup.js.
+
+  // Clone-safe textContent helper. (1) strips Atypon/AIM "FREE" access badges
+  // that nest inside h1 / abstract heading on OA articles. DOM-verified 2026-
+  // 05-06 the AIM markers are:
+  //   • TOC issue-item: <span class="icon-lock_free">FREE</span>
+  //   • Article-page h1: <span class="core__article__access__badges"><span
+  //                       class="citation__access__type free-access">FREE</span></span>
+  // Both removed here so titles/abstracts don't end with "...Version 3)FREE".
+  // (2) Appends a space sentinel after every block-level descendant so adjacent
+  // blocks like `<h3>Description:</h3><p>The ACP...</p>` don't render as
+  // wordstuck "Description:The ACP..." in the resulting MD.
+  function cleanText(el) {
+    if (!el) return '';
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll(
+      // FREE access badges (TOC + article-page variants)
+      '.icon-lock_free, [class*="icon-lock_free"], ' +
+      '.core__article__access__badges, .citation__access__type, .free-access, ' +
+      // hidden / non-content nodes
+      '[aria-hidden="true"], script, style'
+    ).forEach(n => n.remove());
+    const ownerDoc = clone.ownerDocument || document;
+    const blocks = clone.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, div, section, blockquote, dt, dd, br');
+    for (const b of blocks) {
+      try { b.appendChild(ownerDoc.createTextNode(' ')); } catch (_) {}
+    }
+    return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
   function extractLWWArticleBody(doc, baseUrl) {
     const titleEl = doc.querySelector(
       // LWW
@@ -936,7 +969,7 @@
       // generic
       'h1[itemprop="headline"], main h1, article h1'
     );
-    const title = titleEl ? titleEl.textContent.trim().replace(/\s+/g, ' ') : '';
+    const title = cleanText(titleEl);
     const authorEl = doc.querySelector(
       // LWW
       '.al-author-name, .authors-list, .authors, ' +
@@ -980,7 +1013,7 @@
     for (const sel of ABS_SELECTORS) {
       const el = doc.querySelector(sel);
       if (!el) continue;
-      const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+      const text = cleanText(el);
       if (text.length > abstract.length && text.length > 50) abstract = text;
     }
     const bodyContainer = doc.querySelector(
