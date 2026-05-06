@@ -118,9 +118,16 @@
         fullUrl: `https://www.nejm.org/doi/full/${doi}`,
         author: authorInput ? authorInput.value.trim().replace(/\s+/g, ' ') : '',
         typeCode, typeName: typeLabels[typeCode] || typeCode.toUpperCase(),
-        // NEJM TOC does not provide a reliable public OA download signal here.
-        // Keep entries metadata-only unless a future explicit OA marker is added.
-        hasPdf: false, isOA: false, journal: 'NEJM',
+        // v3.23.0 (Copper 2026-05-06 directive "JAMA and NEJM 照辦"): route NEJM
+        // through the same text+image extraction path as AIM/LWW. NEJM TOC does
+        // not surface an OA flag (DOM-verified — none of `.access__free`,
+        // `.icon-access-open`, `.icon-access-free`, `.free-access`, text-FREE
+        // markers, or aria-label*='free' hit on any item), so isOA stays false
+        // by default. Body extraction works through subscriber session same-
+        // origin fetch regardless. PDF link kept as-is so users can manually
+        // download via the publisher PDF endpoint when desired.
+        hasPdf: true, isOA: false, journal: 'NEJM',
+        kind: 'lww-text-image',
       });
     });
     return articles;
@@ -605,9 +612,18 @@
         author,
         typeCode: '',
         typeName: currentSection,
-        hasPdf: isOA,   // STRICT: non-OA NOT downloadable — Copper 2026-04-22 bug fix
+        // v3.23.0 (Copper 2026-05-06 directive "JAMA and NEJM 照辦"): route JAMA
+        // through the same text+image extraction path as AIM/LWW. JAMA's PDF
+        // endpoint is server-gated via /Content/CheckPdfAccess and not feasible
+        // from extension context (the original v3.11 STRICT-OA gate enforced
+        // metadata-only for non-OA), but the article fulltext page itself is
+        // reachable in subscriber session for both OA and subscription items.
+        // hasPdf=true now means "downloadable as text+image bundle"; OA flag
+        // (.badges .badge.icon-free) drives the badge label only.
+        hasPdf: true,
         isOA,
         journal: 'JAMA',
+        kind: 'lww-text-image',
       });
     });
     return articles;
@@ -932,13 +948,15 @@
   // a publisher's DOM has drifted. Tagged with the historic name extractLWWArticleBody for
   // backward-compat with the message-handler routing in content.js / popup.js.
 
-  // Clone-safe textContent helper. (1) strips Atypon/AIM "FREE" access badges
+  // Clone-safe textContent helper. (1) strips publisher "FREE" access badges
   // that nest inside h1 / abstract heading on OA articles. DOM-verified 2026-
-  // 05-06 the AIM markers are:
-  //   • TOC issue-item: <span class="icon-lock_free">FREE</span>
-  //   • Article-page h1: <span class="core__article__access__badges"><span
+  // 05-06 the markers are:
+  //   • AIM TOC issue-item: <span class="icon-lock_free">FREE</span>
+  //   • AIM article-page h1: <span class="core__article__access__badges"><span
   //                       class="citation__access__type free-access">FREE</span></span>
-  // Both removed here so titles/abstracts don't end with "...Version 3)FREE".
+  //   • JAMA article-page: <span class="meta-access-type free-access is-b">
+  //   • JAMA TOC: <span class="badges"><span class="badge icon-free">
+  // All removed here so titles/abstracts don't end with "...FREE".
   // (2) Appends a space sentinel after every block-level descendant so adjacent
   // blocks like `<h3>Description:</h3><p>The ACP...</p>` don't render as
   // wordstuck "Description:The ACP..." in the resulting MD.
@@ -946,9 +964,10 @@
     if (!el) return '';
     const clone = el.cloneNode(true);
     clone.querySelectorAll(
-      // FREE access badges (TOC + article-page variants)
+      // FREE access badges — AIM (Atypon), JAMA (Silverchair), generic variants
       '.icon-lock_free, [class*="icon-lock_free"], ' +
       '.core__article__access__badges, .citation__access__type, .free-access, ' +
+      '.meta-access-type, .badge.icon-free, ' +
       // hidden / non-content nodes
       '[aria-hidden="true"], script, style'
     ).forEach(n => n.remove());
@@ -966,6 +985,8 @@
       'h1.article-title, .article-title h1, .article-title, ' +
       // Atypon (AIM) — citation title block
       'h1.citation__title, .citation__title, .article-header h1, .article__title, ' +
+      // JAMA (Silverchair)
+      'h1.meta-article-title, ' +
       // generic
       'h1[itemprop="headline"], main h1, article h1'
     );
@@ -996,11 +1017,16 @@
     // shadowing the real structured abstract under `section[role="doc-abstract"]`
     // / `.hlFld-Abstract`. Length-based selection prefers the rich block.
     const ABS_SELECTORS = [
+      // NEJM — wraps the structured Background/Methods/Results/Conclusions block
+      'section#summary-abstract',
+      'div#abstracts',
       // Atypon (AIM/ACP, Science) — structured doc-abstract is preferred
       'section[role="doc-abstract"]',
       'div.hlFld-Abstract',
       'section#abstract',
       'div[class*="abstractInFull"]',
+      // JAMA (Silverchair)
+      'div.abstract-content',
       // LWW (Wolters Kluwer)
       'section.abstract',
       '.article-abstract',
@@ -1022,8 +1048,16 @@
     // though ARTICLE is the cleaner container). Try each selector individually
     // so the listed priority is respected.
     const BODY_SELECTORS = [
-      // LWW
-      '.ejp-fulltext-content', '.article-body',
+      // NEJM — `section#bodymatter` is the cleanest body container (~25KB on a
+      // research article: title + sections + figures, NO abstract block, NO
+      // backmatter/refs). DOM-verified 2026-05-06 against NEJMoa2516969.
+      'section#bodymatter',
+      // JAMA (Silverchair) — `#articleContent` wraps article-body /
+      // article-full-text. DOM-verified 2026-05-06 against fullarticle/2843897
+      // (Patient Page) and fullarticle/2835629 (Review article-abstract page).
+      'div#articleContent', 'div.article-full-text', 'div.article-body',
+      // LWW (Wolters Kluwer)
+      '.ejp-fulltext-content',
       // Atypon (AIM) — full text body wrapper
       '.hlFld-Fulltext', '.article__body', '.NLM_article-body', 'article[role="main"]',
       // generic — prefer `article` over `main` so AIM body skips main's wrapper
@@ -1066,16 +1100,28 @@
     const clone = rootEl.cloneNode(true);
     clone.querySelectorAll(
       // platform-agnostic chrome
-      'script, style, nav, [aria-hidden="true"], ' +
+      'script, style, nav, [aria-hidden="true"], template, link[rel="stylesheet"], ' +
       // LWW (Wolters Kluwer) tooling
       '.references-extra, .article-tools, .lww-ejp-article-tools, .js-ejp-article-tools, ' +
       // Atypon / AIM tooling + commerce + sidecar content (DOM-verified 2026-05-06):
       // ecommerce purchase/signin forms, self-citation tools, altmetric badges,
-      // related-content rails, FREE access badges, sticky article header, scripts/templates.
+      // related-content rails, FREE access badges, sticky article header.
       '.st-header, [class*="ecommerce"], [class*="self-citation"], [class*="altmetric"], ' +
       '[class*="related-articles"], [class*="related-content"], [class*="core-metrics"], ' +
       '.core__article__access__badges, .citation__access__type, .free-access, ' +
-      'template, link[rel="stylesheet"]'
+      // NEJM-specific (DOM-verified 2026-05-06 on NEJMoa2516969): the article
+      // wrapper carries pop-up wrappers + an aside (related articles) + a
+      // core-collateral block (references / citation tools / supplementary
+      // material). bodymatter selector already excludes most, but in fall-
+      // through to `article` we still want these gone.
+      '.references-popup-wrapper, .article-tools__savePopup, .article-tools__articleAlertPopup, ' +
+      '.ng-do-media_popup, .articles-nav, .core-collateral, ' +
+      // JAMA-specific (DOM-verified 2026-05-06 on fullarticle/2843897): top-info
+      // widget with author meta + breadcrumb toaster + activity scroll bar.
+      '.articleTopInfo_wrap, .widget-ArticleTopInfo, .bcToasterContent, ' +
+      '.activity-top-info-content-scroll-bar, ' +
+      // FREE access badge variants (TOC + article)
+      '.meta-access-type, .badge.icon-free'
     ).forEach(e => e.remove());
     let md = '';
     function walk(node) {

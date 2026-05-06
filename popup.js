@@ -303,8 +303,14 @@ function renderList() {
     } else if (base === 'science') {
       badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
-    } else if (base === 'nejm' && a.typeName) {
-      badges = `<span class="badge type">${escHtml(a.typeName)}</span>`;
+    } else if (base === 'nejm') {
+      // v3.23.0 (Copper 2026-05-06 directive): NEJM routed through text+image
+      // extraction path. NEJM TOC has no reliable OA flag (DOM-verified) so
+      // every entry shows "Sub. text+img" — body extraction works in subscriber
+      // session regardless of OA status, and the underlying PDF endpoint is
+      // server-gated either way.
+      badges = '<span class="badge oa">Sub. text+img</span>';
+      if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'bmj') {
       // STRICT (Copper 2026-05-02 bug fix): non-OA BMJ articles are subscription-gated even
       // when the TOC suggests "free to read" — the PDF endpoint paywalls. Only the explicit
@@ -322,10 +328,14 @@ function renderList() {
         : '<span class="badge oa">Sub. text+img</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'jama') {
-      // JAMA has explicit .badge.icon-free OA flag — STRICT gate per Copper 2026-04-22
-      // (non-OA articles' PDFs are server-gated via /Content/CheckPdfAccess, generic
-      // grabbing produces paywall HTML). hasPdf=isOA + checkbox disabled for non-OA.
-      badges = a.isOA ? '<span class="badge oa">Free</span>' : '<span class="badge closed">Metadata</span>';
+      // v3.23.0 (Copper 2026-05-06 directive "JAMA and NEJM 照辦"): JAMA routed
+      // through text+image extraction path. The original v3.11 STRICT-OA gate
+      // is superseded — body extraction reads the article fulltext page in
+      // subscriber session even when the PDF endpoint is gated. FREE badge
+      // (`.badges .badge.icon-free` per Copper 2026-04-22) drives label only.
+      badges = a.isOA
+        ? '<span class="badge oa">Free text+img</span>'
+        : '<span class="badge oa">Sub. text+img</span>';
       if (a.typeName) badges += ` <span class="badge type">${escHtml(a.typeName)}</span>`;
     } else if (base === 'lww') {
       // v3.20.0: LWW articles use text+image extraction path (PDF stream gated
