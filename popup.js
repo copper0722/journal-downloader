@@ -462,10 +462,17 @@ async function fetchAndSaveMd() {
   const base = modeBase();
 
   // Target: all articles with a fullUrl; non-OA/subscription entries are metadata-only.
-  // Skip only if abstract already long enough (>400 chars) AND fullUrl missing
+  // Skip only if abstract already long enough (>400 chars) AND fullUrl missing.
+  // EXCEPTION: kind='lww-text-image' articles (LWW JASN/CJASN, AIM since v3.22)
+  // ALWAYS fetch — their TOC pre-population is just a short editor blurb that
+  // must be replaced with the real on-page structured abstract regardless of
+  // its length (Copper 2026-05-06: AIM TOC inline summary is the "副標", not
+  // the actual abstract).
   const toFetch = articles
     .map((a, i) => ({ ...a, index: i }))
-    .filter(a => a.fullUrl && !(a.abstract && a.abstract.length > 400));
+    .filter(a => a.fullUrl && (
+      a.kind === 'lww-text-image' || !(a.abstract && a.abstract.length > 400)
+    ));
 
   if (toFetch.length === 0) {
     statusEl.classList.add('active');
@@ -495,24 +502,60 @@ async function fetchAndSaveMd() {
   const doOne = (article) => new Promise((resolve) => {
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       if (!tabs[0]) { resolve(); return; }
-      chrome.tabs.sendMessage(
-        tabs[0].id,
-        { action: 'fetchOneAbstract', url: article.fullUrl, doi: article.doi, mode: base },
-        response => {
-          if (!chrome.runtime.lastError && response) {
-            if (response.abstract) {
-              articles[article.index].abstract = response.abstract;
-              fetched.n++;
+      // Branch on kind:
+      // - kind='lww-text-image' (LWW, AIM) → use extractLWWArticle which does a
+      //   subscriber-session same-origin fetch and parses via the Atypon/LWW
+      //   selector union. Crossref is BYPASSED here because for AIM Living
+      //   Rapid Review articles the Crossref-deposited "abstract" is just the
+      //   short editor blurb that AIM also shows on the TOC, so the
+      //   `crossref || page` precedence in fetchArticleAbstract makes it win
+      //   over the real on-page structured abstract. Going through
+      //   extractLWWArticle reads the page DOM directly (`.hlFld-Abstract`,
+      //   `section[role="doc-abstract"]`, etc.) so the click-through abstract
+      //   replaces the TOC summary as Copper expects.
+      // - everything else → existing fetchOneAbstract (Crossref-first hybrid).
+      if (article.kind === 'lww-text-image') {
+        chrome.tabs.sendMessage(
+          tabs[0].id,
+          { action: 'extractLWWArticle', url: article.fullUrl },
+          response => {
+            if (!chrome.runtime.lastError && response && response.ok) {
+              if (response.abstract && response.abstract.length > 50) {
+                articles[article.index].abstract = response.abstract;
+                fetched.n++;
+              } else {
+                console.warn('[fetchAndSaveMd] empty abstract from extractLWWArticle',
+                  article.fullUrl, 'kept TOC summary');
+              }
+            } else {
+              console.warn('[fetchAndSaveMd] extractLWWArticle failed',
+                article.fullUrl, chrome.runtime.lastError, response);
             }
-            if (response.articleType && !articles[article.index].articleType) {
-              articles[article.index].articleType = response.articleType;
-            }
+            completed++;
+            updateUi();
+            resolve();
           }
-          completed++;
-          updateUi();
-          resolve();
-        }
-      );
+        );
+      } else {
+        chrome.tabs.sendMessage(
+          tabs[0].id,
+          { action: 'fetchOneAbstract', url: article.fullUrl, doi: article.doi, mode: base },
+          response => {
+            if (!chrome.runtime.lastError && response) {
+              if (response.abstract) {
+                articles[article.index].abstract = response.abstract;
+                fetched.n++;
+              }
+              if (response.articleType && !articles[article.index].articleType) {
+                articles[article.index].articleType = response.articleType;
+              }
+            }
+            completed++;
+            updateUi();
+            resolve();
+          }
+        );
+      }
     });
   });
 
