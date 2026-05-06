@@ -221,6 +221,11 @@ function escHtml(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+// Escape `[`/`]` inside markdown link text. JAMA parser prepends `[Section]` to
+// titles; without escaping the `### N. [Title](url)` link form would break.
+function escMdLinkText(s) {
+  return String(s).replace(/[\[\]]/g, '\\$&');
+}
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function modeBase() {
@@ -589,7 +594,14 @@ ${totalArticles} articles · ${oaCount} open access / free
       lastType = a.typeName;
     }
 
-    md += `### ${i + 1}. ${a.title}\n\n`;
+    // Title — clickable link to the click-through fulltext URL when present,
+    // so a JC draft that quotes the title inherits the hyperlink natively.
+    // Angle-bracket destination form `(<url>)` keeps Lancet PII URLs (which
+    // contain `(YY)` substrings) safe under non-CommonMark-strict renderers.
+    const titleLine = a.fullUrl
+      ? `### ${i + 1}. [${escMdLinkText(a.title)}](<${a.fullUrl}>)`
+      : `### ${i + 1}. ${a.title}`;
+    md += `${titleLine}\n\n`;
 
     // Metadata line — article type + OA flag + author
     const meta = [];
@@ -611,9 +623,13 @@ ${totalArticles} articles · ${oaCount} open access / free
     if (a.articleId) links.push(`**ID**: \`${a.articleId}\``);
     if (links.length) md += links.join('  \n') + '\n\n';
 
-    // Abstract (if present)
+    // Abstract (if present) — followed by an explicit "→ 原文" trail link so
+    // when the abstract paragraph is quoted into a JC draft, the source URL
+    // travels with it. Angle-bracket destination form is safe with Lancet-style
+    // URLs that contain parentheses.
     if (a.abstract) {
       md += `> ${a.abstract}\n\n`;
+      if (a.fullUrl) md += `[→ 原文](<${a.fullUrl}>)\n\n`;
     }
 
     md += '---\n\n';
